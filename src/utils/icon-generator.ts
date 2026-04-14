@@ -1,4 +1,4 @@
-import type { BatteryInfo } from "../steelseries/types";
+import type { BatteryInfo } from "../types";
 
 const SIZE = 144;
 

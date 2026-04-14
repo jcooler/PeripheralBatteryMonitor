@@ -11,7 +11,7 @@ import type { JsonObject, JsonValue } from "@elgato/utils";
 
 import { SteelSeriesClient } from "../steelseries/client";
 import { LogitechClient } from "../logitech/client";
-import type { BatteryInfo } from "../steelseries/types";
+import type { BatteryInfo } from "../types";
 import {
   generateBatteryIcon,
   generateErrorIcon,

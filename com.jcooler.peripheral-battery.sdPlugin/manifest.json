@@ -32,7 +32,9 @@
       "Icon": "imgs/actions/battery/icon",
       "Tooltip": "Display the battery level of a wireless peripheral (SteelSeries or Logitech)",
       "PropertyInspectorPath": "ui/battery.html",
-      "Controllers": ["Keypad"],
+      "Controllers": [
+        "Keypad"
+      ],
       "States": [
         {
           "Image": "imgs/actions/battery/key",

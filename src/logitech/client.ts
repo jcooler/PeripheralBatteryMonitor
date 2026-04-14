@@ -1,5 +1,5 @@
 import WebSocketModule from "ws";
-import type { BatteryInfo } from "../steelseries/types";
+import type { BatteryInfo } from "../types";
 
 const GHUB_WS_URL = "ws://localhost:9010";
 
