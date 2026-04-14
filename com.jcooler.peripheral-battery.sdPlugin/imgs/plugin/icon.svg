@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+  </defs>
+  <rect width="72" height="72" rx="8" fill="url(#bg)"/>
+  <!-- Battery outline -->
+  <rect x="14" y="22" width="40" height="22" rx="4" fill="none" stroke="#4CAF50" stroke-width="2.5"/>
+  <rect x="54" y="28" width="5" height="10" rx="2" fill="#4CAF50"/>
+  <!-- Battery fill -->
+  <rect x="17" y="25" width="28" height="16" rx="2" fill="#4CAF50" opacity="0.8"/>
+  <!-- SS text -->
+  <text x="36" y="58" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#FF5500">SS</text>
+</svg>

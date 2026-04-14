@@ -1,0 +1,45 @@
+{
+  "Name": "Peripheral Battery Monitor",
+  "Version": "1.1.0.0",
+  "Author": "jcooler",
+  "Description": "Display real-time battery levels for SteelSeries and Logitech wireless peripherals (mice, keyboards, headsets) directly on your Stream Deck. Supports SteelSeries GG and Logitech G Hub.",
+  "Category": "System",
+  "CategoryIcon": "imgs/plugin/category",
+  "Icon": "imgs/plugin/icon",
+  "CodePath": "bin/plugin.js",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "6.5"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.15"
+    }
+  ],
+  "Nodejs": {
+    "Version": "20"
+  },
+  "UUID": "com.jcooler.peripheral-battery",
+  "Actions": [
+    {
+      "Name": "Battery Monitor",
+      "UUID": "com.jcooler.peripheral-battery.monitor",
+      "Icon": "imgs/actions/battery/icon",
+      "Tooltip": "Display the battery level of a wireless peripheral (SteelSeries or Logitech)",
+      "PropertyInspectorPath": "ui/battery.html",
+      "Controllers": ["Keypad"],
+      "States": [
+        {
+          "Image": "imgs/actions/battery/key",
+          "TitleAlignment": "bottom",
+          "FontSize": 10
+        }
+      ]
+    }
+  ]
+}

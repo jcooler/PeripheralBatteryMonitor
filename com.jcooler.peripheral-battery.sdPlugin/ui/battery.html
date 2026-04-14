@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SteelSeries Battery Monitor</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background-color: #2d2d2d;
+        color: #d8d8d8;
+        margin: 0;
+        padding: 0 16px 8px;
+        font-size: 12px;
+      }
+      .sdpi-item {
+        display: flex;
+        align-items: center;
+        margin: 6px 0;
+        min-height: 28px;
+      }
+      .sdpi-item-label {
+        flex: 0 0 100px;
+        text-align: right;
+        padding-right: 10px;
+        font-size: 11px;
+        color: #999;
+      }
+      .sdpi-item-value { flex: 1; }
+      select, input[type="number"], input[type="color"] {
+        padding: 4px 6px;
+        border: 1px solid #444;
+        border-radius: 4px;
+        background: #3a3a3a;
+        color: #d8d8d8;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+      select, input[type="number"] { width: 100%; }
+      input[type="color"] {
+        width: 40px; height: 28px; padding: 2px; cursor: pointer;
+      }
+      .color-row { display: flex; align-items: center; gap: 8px; }
+      .color-row span { font-size: 11px; color: #aaa; }
+      input[type="checkbox"] { margin: 0; cursor: pointer; }
+      .check-row { display: flex; align-items: center; gap: 6px; }
+      .check-row label { font-size: 11px; color: #ccc; cursor: pointer; }
+      select:focus, input:focus { outline: none; border-color: #ff5500; }
+      .status-bar {
+        text-align: center; padding: 6px; margin: 6px 0; border-radius: 4px; font-size: 11px;
+      }
+      .status-connected { background: rgba(76,175,80,0.15); color: #4CAF50; }
+      .status-disconnected { background: rgba(244,67,54,0.15); color: #F44336; }
+      .status-loading { background: rgba(255,152,0,0.15); color: #FF9800; }
+      .refresh-btn {
+        display: block; width: 100%; padding: 5px 10px; border: 1px solid #555;
+        border-radius: 4px; background: #3a3a3a; color: #d8d8d8; cursor: pointer;
+        font-size: 11px; margin-top: 6px;
+      }
+      .refresh-btn:hover { background: #4a4a4a; border-color: #ff5500; }
+      .section-label {
+        font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 1px;
+        margin: 10px 0 4px; padding-top: 6px; border-top: 1px solid #3a3a3a;
+      }
+      .info-text { font-size: 10px; color: #666; margin-top: 10px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="status" class="status-bar status-loading">Loading devices...</div>
+
+    <!-- Device selection -->
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Device</div>
+      <div class="sdpi-item-value">
+        <select id="deviceSelect"><option value="">-- Select Device --</option></select>
+      </div>
+    </div>
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Poll Interval</div>
+      <div class="sdpi-item-value">
+        <select id="pollInterval">
+          <option value="10">10 seconds</option>
+          <option value="30" selected>30 seconds</option>
+          <option value="60">1 minute</option>
+          <option value="120">2 minutes</option>
+          <option value="300">5 minutes</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="refresh-btn" id="refreshBtn">Refresh Device List</button>
+
+    <!-- Display options -->
+    <div class="section-label">Display Options</div>
+
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Percentage</div>
+      <div class="sdpi-item-value check-row">
+        <input type="checkbox" id="showPercentage" checked />
+        <label for="showPercentage">Show percentage on battery</label>
+      </div>
+    </div>
+
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Device Type</div>
+      <div class="sdpi-item-value check-row">
+        <input type="checkbox" id="showDeviceType" />
+        <label for="showDeviceType">Show type label (Mouse, Keyboard...)</label>
+      </div>
+    </div>
+
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Type Font Size</div>
+      <div class="sdpi-item-value">
+        <input type="number" id="deviceTypeFontSize" min="8" max="32" value="13" step="1" />
+      </div>
+    </div>
+
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Device Name</div>
+      <div class="sdpi-item-value check-row">
+        <input type="checkbox" id="showDeviceName" />
+        <label for="showDeviceName">Show device name below battery</label>
+      </div>
+    </div>
+
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Status Text</div>
+      <div class="sdpi-item-value check-row">
+        <input type="checkbox" id="showStatusText" />
+        <label for="showStatusText">Show Charging / Low Battery text</label>
+      </div>
+    </div>
+
+    <div class="sdpi-item">
+      <div class="sdpi-item-label">Background</div>
+      <div class="sdpi-item-value color-row">
+        <input type="color" id="backgroundColor" value="#0d1117" />
+        <span id="bgColorLabel">#0d1117</span>
+      </div>
+    </div>
+
+    <div class="info-text">Press the Stream Deck key to force refresh.</div>
+
+    <script>
+      let websocket = null;
+      let uuid = null;
+      let actionInfo = null;
+      let settings = {};
+
+      function connectElgatoStreamDeckSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
+        uuid = inPropertyInspectorUUID;
+        actionInfo = JSON.parse(inActionInfo);
+        settings = actionInfo.payload?.settings || {};
+
+        websocket = new WebSocket("ws://127.0.0.1:" + inPort);
+
+        websocket.onopen = function () {
+          websocket.send(JSON.stringify({ event: inRegisterEvent, uuid: inPropertyInspectorUUID }));
+          applySettings(settings);
+          sendToPlugin({ event: "getDevices" });
+        };
+
+        websocket.onmessage = function (evt) {
+          const data = JSON.parse(evt.data);
+          if (data.event === "sendToPropertyInspector") handlePluginMessage(data.payload);
+          if (data.event === "didReceiveSettings") {
+            settings = data.payload?.settings || {};
+            applySettings(settings);
+          }
+        };
+      }
+
+      function handlePluginMessage(payload) {
+        if (payload.event === "deviceList") populateDevices(payload.devices);
+      }
+
+      function populateDevices(devices) {
+        const select = document.getElementById("deviceSelect");
+        const currentValue = select.value || String(settings.deviceId || "");
+        select.innerHTML = '<option value="">-- Select Device --</option>';
+        if (devices.length === 0) {
+          document.getElementById("status").className = "status-bar status-disconnected";
+          document.getElementById("status").textContent = "No wireless devices found";
+          return;
+        }
+        devices.forEach(function (device) {
+          const option = document.createElement("option");
+          option.value = String(device.id);
+          option.textContent = device.name;
+          option.dataset.brand = device.brand || "steelseries";
+          if (device.logiId) option.dataset.logiId = device.logiId;
+          select.appendChild(option);
+        });
+        if (currentValue) select.value = currentValue;
+        document.getElementById("status").className = "status-bar status-connected";
+        document.getElementById("status").textContent = devices.length + " device(s) found";
+      }
+
+      function applySettings(s) {
+        if (s.deviceId) document.getElementById("deviceSelect").value = String(s.deviceId);
+        if (s.pollInterval) document.getElementById("pollInterval").value = String(s.pollInterval);
+
+        document.getElementById("showPercentage").checked = s.showPercentage !== false;
+        document.getElementById("showDeviceType").checked = s.showDeviceType === true;
+        document.getElementById("showDeviceName").checked = s.showDeviceName === true;
+        document.getElementById("showStatusText").checked = s.showStatusText === true;
+        if (s.deviceTypeFontSize) document.getElementById("deviceTypeFontSize").value = String(s.deviceTypeFontSize);
+        if (s.backgroundColor) {
+          document.getElementById("backgroundColor").value = s.backgroundColor;
+          document.getElementById("bgColorLabel").textContent = s.backgroundColor;
+        }
+      }
+
+      function saveSettings() {
+        const deviceSelect = document.getElementById("deviceSelect");
+        const selectedOption = deviceSelect.options[deviceSelect.selectedIndex];
+        const bgColor = document.getElementById("backgroundColor").value;
+
+        settings.deviceId = deviceSelect.value ? parseInt(deviceSelect.value, 10) : undefined;
+        settings.deviceName = selectedOption?.textContent || "";
+        settings.deviceBrand = selectedOption?.dataset?.brand || "steelseries";
+        settings.logiDeviceId = selectedOption?.dataset?.logiId || undefined;
+        settings.pollInterval = parseInt(document.getElementById("pollInterval").value, 10);
+        settings.showPercentage = document.getElementById("showPercentage").checked;
+        settings.showDeviceType = document.getElementById("showDeviceType").checked;
+        settings.showDeviceName = document.getElementById("showDeviceName").checked;
+        settings.showStatusText = document.getElementById("showStatusText").checked;
+        settings.deviceTypeFontSize = parseInt(document.getElementById("deviceTypeFontSize").value, 10);
+        settings.backgroundColor = bgColor;
+
+        document.getElementById("bgColorLabel").textContent = bgColor;
+
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          websocket.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+        }
+      }
+
+      function sendToPlugin(payload) {
+        if (websocket && websocket.readyState === WebSocket.OPEN) {
+          websocket.send(JSON.stringify({
+            action: actionInfo?.action, event: "sendToPlugin", context: uuid, payload: payload
+          }));
+        }
+      }
+
+      // Bind all controls
+      ["deviceSelect", "pollInterval", "showPercentage", "showDeviceType",
+       "showDeviceName", "showStatusText", "deviceTypeFontSize", "backgroundColor"
+      ].forEach(function (id) {
+        document.getElementById(id).addEventListener("change", saveSettings);
+      });
+      // Live preview for color picker and font size
+      document.getElementById("backgroundColor").addEventListener("input", function () {
+        document.getElementById("bgColorLabel").textContent = this.value;
+      });
+      document.getElementById("deviceTypeFontSize").addEventListener("input", saveSettings);
+      document.getElementById("refreshBtn").addEventListener("click", function () {
+        document.getElementById("status").className = "status-bar status-loading";
+        document.getElementById("status").textContent = "Refreshing...";
+        sendToPlugin({ event: "getDevices" });
+      });
+    </script>
+  </body>
+</html>

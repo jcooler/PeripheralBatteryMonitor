@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+  </defs>
+  <rect width="144" height="144" rx="12" fill="url(#bg)"/>
+  <!-- Battery icon -->
+  <rect x="30" y="45" width="74" height="36" rx="6" fill="none" stroke="#666" stroke-width="3"/>
+  <rect x="104" y="55" width="8" height="16" rx="3" fill="#666"/>
+  <rect x="34" y="49" width="50" height="28" rx="3" fill="#4CAF50" opacity="0.6"/>
+  <!-- Text -->
+  <text x="72" y="115" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#aaa">SteelSeries</text>
+</svg>
