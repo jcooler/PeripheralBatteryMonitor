@@ -24,6 +24,8 @@ export class LogitechClient {
   private cachedDevices: GHubDevice[] = [];
   private batteryCache = new Map<string, GHubBatteryState>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private lastMessageTime = 0;
   private msgId = 0;
   private pendingRequests = new Map<string, { resolve: (data: unknown) => void; timer: ReturnType<typeof setTimeout> }>();
   private connectPromise: Promise<boolean> | null = null;
@@ -58,10 +60,13 @@ export class LogitechClient {
         this.ws.on("open", () => {
           clearTimeout(timeout);
           this.connected = true;
+          this.lastMessageTime = Date.now();
+          this.startHealthCheck();
           resolve(true);
         });
 
         this.ws.on("message", (data: Buffer) => {
+          this.lastMessageTime = Date.now();
           try {
             const msg = JSON.parse(data.toString());
             const id = msg.msgId;
@@ -79,6 +84,7 @@ export class LogitechClient {
         this.ws.on("close", () => {
           this.connected = false;
           this.ws = null;
+          this.stopHealthCheck();
           // Clear all pending request timers to prevent leaks
           for (const entry of this.pendingRequests.values()) clearTimeout(entry.timer);
           this.pendingRequests.clear();
@@ -94,6 +100,29 @@ export class LogitechClient {
         resolve(false);
       }
     });
+  }
+
+  /** Periodically ping G Hub to detect stale connections */
+  private startHealthCheck(): void {
+    this.stopHealthCheck();
+    this.healthCheckTimer = setInterval(() => {
+      // If no message received in 60 seconds, the connection is likely dead
+      if (this.connected && Date.now() - this.lastMessageTime > 60000) {
+        // Try a ping request — if it times out, force reconnect
+        this.sendRequest("GET", "/devices/list").catch(() => {
+          if (this.ws) {
+            this.ws.close();
+          }
+        });
+      }
+    }, 30000); // Check every 30 seconds
+  }
+
+  private stopHealthCheck(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
   }
 
   private sendRequest(verb: string, path: string, payload?: unknown): Promise<unknown> {
@@ -122,6 +151,10 @@ export class LogitechClient {
   }
 
   async getDevices(): Promise<GHubDevice[]> {
+    // Ensure we're connected before querying
+    if (!this.connected) {
+      await this.initialize();
+    }
     try {
       const resp = (await this.sendRequest("GET", "/devices/list")) as {
         payload?: { deviceInfos?: GHubDevice[] };
@@ -132,6 +165,8 @@ export class LogitechClient {
       );
       return this.cachedDevices;
     } catch {
+      // Request failed — connection might be dead, force reconnect
+      if (this.ws) this.ws.close();
       return this.cachedDevices;
     }
   }
@@ -173,6 +208,7 @@ export class LogitechClient {
   }
 
   destroy(): void {
+    this.stopHealthCheck();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
