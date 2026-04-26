@@ -176,7 +176,6 @@
 
       function populateDevices(devices) {
         const select = document.getElementById("deviceSelect");
-        const currentValue = select.value || String(settings.deviceId || "");
         select.innerHTML = '<option value="">-- Select Device --</option>';
         if (devices.length === 0) {
           document.getElementById("status").className = "status-bar status-disconnected";
@@ -191,7 +190,36 @@
           if (device.logiId) option.dataset.logiId = device.logiId;
           select.appendChild(option);
         });
-        if (currentValue) select.value = currentValue;
+        // Restore selection — match by logiDeviceId (Logitech) or deviceId+brand (SteelSeries)
+        // This survives G Hub restarts where the hashed numeric ID changes but the string ID is stable
+        let matched = false;
+        if (settings.deviceBrand === "logitech" && settings.logiDeviceId) {
+          for (const opt of select.options) {
+            if (opt.dataset.logiId === settings.logiDeviceId) {
+              select.value = opt.value;
+              matched = true;
+              break;
+            }
+          }
+        } else if (settings.deviceId) {
+          for (const opt of select.options) {
+            if (opt.value === String(settings.deviceId) &&
+                opt.dataset.brand === (settings.deviceBrand || "steelseries")) {
+              select.value = opt.value;
+              matched = true;
+              break;
+            }
+          }
+        }
+        // Fallback: match by saved device name
+        if (!matched && settings.deviceName) {
+          for (const opt of select.options) {
+            if (opt.textContent === settings.deviceName) {
+              select.value = opt.value;
+              break;
+            }
+          }
+        }
         document.getElementById("status").className = "status-bar status-connected";
         document.getElementById("status").textContent = devices.length + " device(s) found";
       }
