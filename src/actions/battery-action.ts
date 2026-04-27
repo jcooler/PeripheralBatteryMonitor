@@ -236,10 +236,23 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     try {
       let batteryInfo: BatteryInfo | null = null;
 
-      if (brand === "logitech" && settings.logiDeviceId) {
-        // Logitech — find device by logiDeviceId string
+      if (brand === "logitech") {
+        // Logitech — match by id first, fall back to name (G Hub regenerates IDs per session)
         const devices = await logiClient.getDevices();
-        const device = devices.find((d) => d.id === settings.logiDeviceId);
+        let device = settings.logiDeviceId
+          ? devices.find((d) => d.id === settings.logiDeviceId)
+          : undefined;
+        if (!device && settings.deviceName) {
+          // Strip "[Logi] " prefix if present
+          const targetName = (settings.deviceName as string).replace(/^\[Logi\]\s*/, "");
+          device = devices.find(
+            (d) => (d.extendedDisplayName || d.id) === targetName
+          );
+          // Update stored logiDeviceId to the new session ID
+          if (device) {
+            settings.logiDeviceId = device.id;
+          }
+        }
         if (!device) {
           await actionHandle.setImage(generateErrorIcon("Not Found", bg));
           return;
