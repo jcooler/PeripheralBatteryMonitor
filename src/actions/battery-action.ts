@@ -11,6 +11,7 @@ import type { JsonObject, JsonValue } from "@elgato/utils";
 
 import { SteelSeriesClient } from "../steelseries/client";
 import { LogitechClient } from "../logitech/client";
+import { XboxClient } from "../xbox/client";
 import type { BatteryInfo } from "../types";
 import {
   generateBatteryIcon,
@@ -23,8 +24,9 @@ import {
 interface BatteryActionSettings extends JsonObject {
   deviceId?: number;
   deviceName?: string;
-  deviceBrand?: string; // "steelseries" | "logitech"
-  logiDeviceId?: string; // Logitech device ID string (e.g. "dev00000007")
+  deviceBrand?: string; // "steelseries" | "logitech" | "xbox"
+  logiDeviceId?: string;
+  xboxIndex?: number; // Logitech device ID string (e.g. "dev00000007")
   pollInterval?: number;
   showPercentage?: boolean;
   showDeviceType?: boolean;
@@ -38,6 +40,7 @@ interface BatteryActionSettings extends JsonObject {
 /** Shared client instances */
 const ssClient = new SteelSeriesClient();
 const logiClient = new LogitechClient();
+const xboxClient = new XboxClient();
 
 /** Active polling timers per action context */
 const pollingTimers = new Map<string, ReturnType<typeof setInterval>>();
@@ -55,13 +58,14 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     // Show loading state
     await ev.action.setImage(generateLoadingIcon());
 
-    // Initialize both clients (either or both may succeed)
-    const [ssOk, logiOk] = await Promise.all([
+    // Initialize all clients (any may succeed)
+    const [ssOk, logiOk, xboxOk] = await Promise.all([
       ssClient.initialize().catch(() => false),
       logiClient.initialize().catch(() => false),
+      xboxClient.initialize().catch(() => false),
     ]);
 
-    if (!ssOk && !logiOk) {
+    if (!ssOk && !logiOk && !xboxOk) {
       await ev.action.setImage(generateErrorIcon("No Software Found"));
       return;
     }
@@ -106,7 +110,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     // Handle messages from the Property Inspector
     const payload = ev.payload as Record<string, unknown>;
     if (payload.event === "getDevices") {
-      const deviceList: { id: number; name: string; type: string; brand: string; logiId?: string }[] = [];
+      const deviceList: { id: number; name: string; type: string; brand: string; logiId?: string; xboxIndex?: number }[] = [];
 
       // SteelSeries devices
       try {
@@ -142,6 +146,20 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
           })
         );
       } catch { /* Logi not available */ }
+
+      // Xbox controllers
+      try {
+        const xboxControllers = await xboxClient.getDevices();
+        xboxControllers.forEach((c) =>
+          deviceList.push({
+            id: 90000 + c.index,
+            name: `[Xbox] Controller ${c.index + 1}`,
+            type: "Controller",
+            brand: "xbox",
+            xboxIndex: c.index,
+          })
+        );
+      } catch { /* Xbox not available */ }
 
       // Send device list to Property Inspector (may fail if PI is not visible)
       try {
@@ -202,6 +220,26 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       }
     } catch { /* Logi not available */ }
 
+    // Try Xbox controllers
+    try {
+      const controllers = await xboxClient.getDevices();
+      if (controllers.length > 0) {
+        const c = controllers[0];
+        const settings: BatteryActionSettings = {
+          deviceId: 90000 + c.index,
+          deviceName: `Xbox Controller ${c.index + 1}`,
+          deviceBrand: "xbox",
+          xboxIndex: c.index,
+          pollInterval: 30,
+          showPercentage: true,
+        };
+        await ev.action.setSettings(settings);
+        await this.updateBatteryForDevice(ev.action, settings);
+        this.startPolling(ev.action.id, settings);
+        return;
+      }
+    } catch { /* Xbox not available */ }
+
     await ev.action.setImage(generateErrorIcon("No Devices"));
   }
 
@@ -236,7 +274,16 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     try {
       let batteryInfo: BatteryInfo | null = null;
 
-      if (brand === "logitech") {
+      if (brand === "xbox") {
+        const idx = (settings.xboxIndex as number) ?? ((settings.deviceId as number) - 90000);
+        const controllers = await xboxClient.getDevices();
+        const controller = controllers.find((c) => c.index === idx);
+        if (!controller) {
+          await actionHandle.setImage(generateErrorIcon("Disconnected", bg));
+          return;
+        }
+        batteryInfo = await xboxClient.getBatteryInfo(controller);
+      } else if (brand === "logitech") {
         // Logitech — match by id first, fall back to name (G Hub regenerates IDs per session)
         const devices = await logiClient.getDevices();
         let device = settings.logiDeviceId

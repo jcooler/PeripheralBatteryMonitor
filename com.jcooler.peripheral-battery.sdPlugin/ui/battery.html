@@ -188,6 +188,7 @@
           option.textContent = device.name;
           option.dataset.brand = device.brand || "steelseries";
           if (device.logiId) option.dataset.logiId = device.logiId;
+          if (device.xboxIndex !== undefined) option.dataset.xboxIndex = String(device.xboxIndex);
           select.appendChild(option);
         });
         // Restore selection — match by logiDeviceId (Logitech) or deviceId+brand (SteelSeries)
@@ -248,6 +249,9 @@
         settings.deviceName = selectedOption?.textContent || "";
         settings.deviceBrand = selectedOption?.dataset?.brand || "steelseries";
         settings.logiDeviceId = selectedOption?.dataset?.logiId || undefined;
+        settings.xboxIndex = selectedOption?.dataset?.xboxIndex !== undefined
+          ? parseInt(selectedOption.dataset.xboxIndex, 10)
+          : undefined;
         settings.pollInterval = parseInt(document.getElementById("pollInterval").value, 10);
         settings.showPercentage = document.getElementById("showPercentage").checked;
         settings.showDeviceType = document.getElementById("showDeviceType").checked;
