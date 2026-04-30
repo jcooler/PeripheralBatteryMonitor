@@ -3,3 +3,4 @@ com.jcooler.peripheral-battery.sdPlugin/bin/
 com.jcooler.peripheral-battery.sdPlugin/logs/
 *.streamDeckPlugin
 .DS_Store
+.claude/

@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(Get-Process | Where-Object { $_.Name -match 'logi' } | Select-Object Name, Id, Path | Format-Table -AutoSize)"
-    ]
-  }
-}
