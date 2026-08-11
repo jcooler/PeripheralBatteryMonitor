@@ -381,7 +381,7 @@ function hashStr(s: string): number {
   return Math.abs(h);
 }
 
-function mapLogiType(type: string): string {
+function mapLogiType(type: string | undefined): string {
   const t = (type || "").toLowerCase();
   if (t.includes("mouse")) return "Mouse";
   if (t.includes("keyboard")) return "Keyboard";
