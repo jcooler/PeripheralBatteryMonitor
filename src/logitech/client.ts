@@ -193,6 +193,7 @@ export class LogitechClient implements DeviceProvider {
 
   invalidateDiscovery(): void {
     this.discoveryGeneration += 1;
+    this.discoveryInFlight = null;
     this.endpoints.clear();
   }
 
@@ -357,10 +358,15 @@ export class LogitechClient implements DeviceProvider {
     return new Promise<unknown>((resolve, reject) => {
       const id = `rr-${++this.requestId}`;
       const timer = setTimeout(() => {
+        const error = new Error("Logitech G Hub request timed out");
         this.finishPending(
           id,
-          new Error("Logitech G Hub request timed out")
+          error
         );
+        if (this.isCurrentSocket(socket, generation)) {
+          this.handleSocketLoss(socket, generation, error);
+          socket.close();
+        }
       }, this.requestTimeoutMs);
       const entry: PendingRequest = {
         generation,

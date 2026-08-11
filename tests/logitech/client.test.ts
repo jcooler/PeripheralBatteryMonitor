@@ -223,4 +223,51 @@ describe("Logitech G Hub provider", () => {
 
     expect(sockets).toHaveLength(2);
   });
+
+  it("closes and reconnects a socket whose request times out", async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setup();
+    const [mouse] = await client.discover();
+    sockets[0].responder = null;
+
+    const pending = client.readStatus(mouse);
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(pending).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Logitech G Hub request timed out",
+    });
+    expect(sockets[0].closeCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("starts a fresh discovery after invalidating an in-flight response", async () => {
+    const { client, sockets } = setup();
+    await client.discover();
+    const socket = sockets[0];
+    socket.responder = null;
+    const stale = client.discover();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+
+    client.invalidateDiscovery("manual refresh");
+    socket.responder = (message) => {
+      if (message.path === "/devices/list") {
+        queueMicrotask(() => socket.emit("message", Buffer.from(JSON.stringify({
+          msgId: message.msgId,
+          payload: { deviceInfos: deviceList },
+        }))));
+      }
+    };
+    const current = client.discover();
+
+    await expect(current).resolves.toHaveLength(2);
+    expect(socket.sent.filter((message) => message.path === "/devices/list")).toHaveLength(3);
+    const staleMessage = socket.sent[1];
+    socket.emit("message", Buffer.from(JSON.stringify({
+      msgId: staleMessage.msgId,
+      payload: { deviceInfos: deviceList },
+    })));
+    await expect(stale).rejects.toThrow("generation changed");
+  });
 });
