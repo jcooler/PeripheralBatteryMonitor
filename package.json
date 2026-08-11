@@ -2,27 +2,37 @@
   "name": "com.jcooler.peripheral-battery",
   "version": "1.1.0",
   "description": "Stream Deck plugin to display battery levels for SteelSeries and Logitech wireless peripherals",
+  "private": true,
   "main": "src/plugin.ts",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "watch": "rollup -c -w",
-    "pack": "streamdeck pack com.jcooler.peripheral-battery.sdPlugin"
+    "validate": "npm run build && streamdeck validate com.jcooler.peripheral-battery.sdPlugin --no-update-check",
+    "pack:dry": "npm run build && streamdeck pack com.jcooler.peripheral-battery.sdPlugin --dry-run --no-update-check",
+    "pack": "npm run build && streamdeck pack com.jcooler.peripheral-battery.sdPlugin --output dist --force --no-update-check"
   },
   "dependencies": {
     "@elgato/streamdeck": "^2.0.4",
-    "ws": "^8.20.0"
+    "node-hid": "3.4.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
+    "@elgato/cli": "1.8.0",
     "@rollup/plugin-commonjs": "^29.0.2",
     "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-node-resolve": "^16.0.0",
     "@rollup/plugin-typescript": "^12.1.2",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
+    "playwright": "1.62.1",
     "rollup": "^4.29.0",
-    "sharp": "^0.34.5",
+    "sharp": "0.35.3",
     "tslib": "^2.8.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "4.1.10"
   }
 }
