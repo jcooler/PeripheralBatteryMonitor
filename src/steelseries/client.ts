@@ -19,6 +19,7 @@ const PROVIDER_ID = "steelseries" as const;
 const PROVIDER_LABEL = "SteelSeries GG";
 const RECONNECT_DELAY_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const LIVE_DATA_MAX_AGE_MS = 15 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -49,6 +50,7 @@ export interface SteelSeriesSocketOptions {
 }
 
 export interface SteelSeriesSocket {
+  on(event: "open", listener: () => void): this;
   on(event: "message", listener: (data: Buffer) => void): this;
   on(event: "close", listener: () => void): this;
   on(event: "error", listener: (error: Error) => void): this;
@@ -67,6 +69,7 @@ interface SteelSeriesClientOptions {
   ) => SteelSeriesSocket;
   now?: () => number;
   liveDataMaxAgeMs?: number;
+  handshakeTimeoutMs?: number;
 }
 
 interface LiveBattery {
@@ -170,6 +173,7 @@ export class SteelSeriesClient implements DeviceProvider {
   ) => SteelSeriesSocket;
   private readonly now: () => number;
   private readonly liveDataMaxAgeMs: number;
+  private readonly handshakeTimeoutMs: number;
 
   private encryptedAddress: string | null = null;
   private initialized = false;
@@ -196,6 +200,8 @@ export class SteelSeriesClient implements DeviceProvider {
         new WebSocketModule(url, socketOptions) as unknown as SteelSeriesSocket);
     this.now = options.now ?? Date.now;
     this.liveDataMaxAgeMs = options.liveDataMaxAgeMs ?? LIVE_DATA_MAX_AGE_MS;
+    this.handshakeTimeoutMs =
+      options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
   }
 
   async initialize(): Promise<boolean> {
@@ -325,9 +331,14 @@ export class SteelSeriesClient implements DeviceProvider {
         parseLoopbackAddress(props.encryptedAddress);
         if (!this.isCurrentLifecycle(generation)) return false;
         this.encryptedAddress = props.encryptedAddress;
+        this.initialized = false;
+        const connected = await this.connectSocket(
+          props.encryptedAddress,
+          generation
+        );
+        if (!connected || !this.isCurrentLifecycle(generation)) return false;
         this.initialized = true;
         this.reconnectAttempt = 0;
-        this.connectSocket(props.encryptedAddress);
         return true;
       } catch {
         if (!this.isCurrentLifecycle(generation)) return false;
@@ -367,44 +378,102 @@ export class SteelSeriesClient implements DeviceProvider {
       throw new Error("SteelSeries GG returned an invalid device list");
     }
 
-    const batteryDevices = payload.devices.filter(hasBatteryCapability);
+    const candidates = payload.devices
+      .filter(isSteelSeriesDevice)
+      .filter(hasBatteryCapability);
+    const identityCounts = new Map<number, number>();
+    for (const device of candidates) {
+      identityCounts.set(device.id, (identityCounts.get(device.id) ?? 0) + 1);
+    }
+    const batteryDevices = candidates.filter(
+      (device) => identityCounts.get(device.id) === 1
+    );
     this.cachedDevices = new Map(
       batteryDevices.map((device) => [String(device.id), device])
     );
     return batteryDevices;
   }
 
-  private connectSocket(address: string): void {
+  private connectSocket(
+    address: string,
+    lifecycleGeneration: number
+  ): Promise<boolean> {
     this.clearReconnectTimer();
     const generation = ++this.socketGeneration;
     const oldSocket = this.socket;
     this.socket = null;
     oldSocket?.close();
 
-    const socket = this.createSocket(`wss://${address}/sock`, {
-      headers: { Origin: "file://" },
-      rejectUnauthorized: false,
-    });
+    let socket: SteelSeriesSocket;
+    try {
+      socket = this.createSocket(`wss://${address}/sock`, {
+        headers: { Origin: "file://" },
+        rejectUnauthorized: false,
+      });
+    } catch {
+      this.encryptedAddress = null;
+      this.scheduleReconnect();
+      return Promise.resolve(false);
+    }
     this.socket = socket;
 
-    socket.on("message", (data) => {
-      if (!this.isCurrentSocket(socket, generation)) return;
-      this.handleSocketMessage(data);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let opened = false;
+      const finish = (result: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(handshakeTimer);
+        resolve(result);
+      };
+      const handshakeTimer = setTimeout(() => {
+        if (!this.isCurrentSocket(socket, generation) || opened) return;
+        this.handleSocketLoss(socket, generation);
+        socket.close();
+        finish(false);
+      }, this.handshakeTimeoutMs);
+
+      socket.on("open", () => {
+        if (
+          !this.isCurrentSocket(socket, generation) ||
+          !this.isCurrentLifecycle(lifecycleGeneration)
+        ) {
+          return;
+        }
+        opened = true;
+        finish(true);
+      });
+      socket.on("message", (data) => {
+        if (!opened || !this.isCurrentSocket(socket, generation)) return;
+        this.handleSocketMessage(data);
+      });
+      socket.on("close", () => {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        this.handleSocketLoss(socket, generation);
+        finish(false);
+      });
+      socket.on("error", () => {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        this.handleSocketLoss(socket, generation);
+        socket.close();
+        finish(false);
+      });
     });
-    socket.on("close", () => {
-      if (!this.isCurrentSocket(socket, generation) || this.destroyed) return;
-      this.socket = null;
-      this.initialized = false;
-      this.encryptedAddress = null;
-      this.lifecycleGeneration += 1;
-      this.discoveryGeneration += 1;
-      this.cachedDevices.clear();
-      this.clearLiveData();
-      this.scheduleReconnect();
-    });
-    socket.on("error", () => {
-      // The matching close event owns recovery.
-    });
+  }
+
+  private handleSocketLoss(
+    socket: SteelSeriesSocket,
+    generation: number
+  ): void {
+    if (!this.isCurrentSocket(socket, generation)) return;
+    this.socket = null;
+    this.initialized = false;
+    this.encryptedAddress = null;
+    this.lifecycleGeneration += 1;
+    this.discoveryGeneration += 1;
+    this.cachedDevices.clear();
+    this.clearLiveData();
+    this.scheduleReconnect();
   }
 
   private isCurrentSocket(
@@ -460,7 +529,9 @@ export class SteelSeriesClient implements DeviceProvider {
     if (isRecord(data.connection_status)) {
       const status = data.connection_status.status;
       if (typeof status === "number") {
-        this.connectionData.set(nativeId, status === 1);
+        const connected = status === 1;
+        this.connectionData.set(nativeId, connected);
+        if (!connected) this.batteryData.delete(nativeId);
       }
     }
 
@@ -468,6 +539,9 @@ export class SteelSeriesClient implements DeviceProvider {
       const status = data.connectionEvent.connectionStatus;
       if (typeof status === "string") {
         this.headsetConnectionData.set(nativeId, status);
+        if (!isConnectedHeadsetState(status)) {
+          this.batteryData.delete(nativeId);
+        }
       }
     }
 
@@ -485,10 +559,7 @@ export class SteelSeriesClient implements DeviceProvider {
     if (isHeadsetType(device)) {
       const headsetStatus = this.headsetConnectionData.get(nativeId);
       if (headsetStatus) {
-        return (
-          headsetStatus !== "PAIRED_NOT_CONNECTED" &&
-          headsetStatus !== "UNKNOWN_OR_HEADSET_NOT_CONNECTED"
-        );
+        return isConnectedHeadsetState(headsetStatus);
       }
     }
     return this.connectionData.get(nativeId) ?? device.connected === 1;
@@ -554,7 +625,40 @@ function toDescriptor(device: SteelSeriesDevice): DeviceDescriptor {
 }
 
 function hasBatteryCapability(device: SteelSeriesDevice): boolean {
-  return device.genericDevicePropertiesStatus?.includes("batteryLevels") === true;
+  return (
+    Array.isArray(device.genericDevicePropertiesStatus) &&
+    device.genericDevicePropertiesStatus.includes("batteryLevels")
+  );
+}
+
+function isSteelSeriesDevice(value: unknown): value is SteelSeriesDevice {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === "number" &&
+    Number.isSafeInteger(value.id) &&
+    value.id >= 0 &&
+    typeof value.name === "string" &&
+    value.name.trim().length > 0 &&
+    typeof value.display_name === "string" &&
+    typeof value.type === "number" &&
+    Number.isFinite(value.type) &&
+    typeof value.deviceTypeName === "string" &&
+    (value.connected === 0 || value.connected === 1) &&
+    (value.genericDevicePropertiesStatus === undefined ||
+      (Array.isArray(value.genericDevicePropertiesStatus) &&
+        value.genericDevicePropertiesStatus.every(
+          (property) => typeof property === "string"
+        )))
+  );
+}
+
+function isConnectedHeadsetState(status: string): boolean {
+  return (
+    status === "CONNECTED" ||
+    status === "HEADSET_CONNECTED" ||
+    status === "PAIRED_CONNECTED" ||
+    status === "PAIRED_AND_CONNECTED"
+  );
 }
 
 function isHeadsetType(device: SteelSeriesDevice): boolean {
@@ -581,20 +685,17 @@ function parseLoopbackAddress(address: string): {
   hostname: string;
   port: number;
 } {
-  let parsed: URL;
-  try {
-    parsed = new URL(`https://${address}`);
-  } catch {
-    throw new Error("SteelSeries GG address is invalid");
-  }
-
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const bracketed = /^\[(::1)\]:(\d{1,5})$/.exec(address);
+  const ordinary = /^([^:/?#@]+):(\d{1,5})$/.exec(address);
+  const match = bracketed ?? ordinary;
+  if (!match) throw new Error("SteelSeries GG address is invalid");
+  const hostname = match[1].toLowerCase();
   const ipVersion = isIP(hostname);
   const loopback =
     hostname === "localhost" ||
     hostname === "::1" ||
     (ipVersion === 4 && hostname.startsWith("127."));
-  const port = Number(parsed.port);
+  const port = Number(match[2]);
   if (!loopback) throw new Error("SteelSeries GG address must be loopback");
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error("SteelSeries GG address has an invalid port");

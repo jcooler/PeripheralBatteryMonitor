@@ -38,6 +38,7 @@ it("never invokes a mutating SteelSeries operation across the full safe lifecycl
     createSocket: vi.fn(() => {
       const socket = new RecordingSocket();
       sockets.push(socket);
+      queueMicrotask(() => socket.emit("open"));
       return socket;
     }),
     now: () => 1,

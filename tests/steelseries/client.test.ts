@@ -95,6 +95,7 @@ function setup() {
   const createSocket = vi.fn(() => {
     const socket = new FakeSocket();
     sockets.push(socket);
+    queueMicrotask(() => socket.emit("open"));
     return socket;
   });
   const client = new SteelSeriesClient({
@@ -307,6 +308,7 @@ describe("passive SteelSeries GG client", () => {
       createSocket: vi.fn(() => {
         const socket = new FakeSocket();
         sockets.push(socket);
+        queueMicrotask(() => socket.emit("open"));
         return socket;
       }),
       now: () => now,
@@ -338,6 +340,92 @@ describe("passive SteelSeries GG client", () => {
       batteryLevel: -1,
       isConnected: true,
     });
+  });
+
+  it("does not reuse battery data observed before a disconnect", async () => {
+    const { client, sockets } = setup();
+    const [mouse] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: {
+        id: 42,
+        connection_status: { status: 1 },
+        battery_status: { charging: 0, level: 63 },
+      },
+    })));
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      level: { kind: "percentage", value: 63 },
+    });
+
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, connection_status: { status: 0 } },
+    })));
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, connection_status: { status: 1 } },
+    })));
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+  });
+
+  it("fails closed for an unknown headset connection state", async () => {
+    const { client, sockets } = setup();
+    const [, headset] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: {
+        id: 43,
+        connectionEvent: { connectionStatus: "SOMETHING_NEW" },
+        batteryEvent: { batteryPercent: 80 },
+      },
+    })));
+
+    await expect(client.readStatus(headset)).resolves.toMatchObject({
+      state: "disconnected",
+      level: { kind: "unavailable" },
+    });
+  });
+
+  it("times out a WebSocket handshake that never opens and retries later", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const client = new SteelSeriesClient({
+      corePropsPaths: ["coreProps.json"],
+      readTextFile: vi.fn(async () => JSON.stringify({ encryptedAddress: "127.0.0.1:57192" })),
+      httpGet: vi.fn(),
+      createSocket: vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      }),
+      handshakeTimeoutMs: 100,
+    });
+
+    const initialization = client.initialize();
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(initialization).resolves.toBe(false);
+    expect(sockets[0].closeCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("omits malformed and duplicate inventory identities", async () => {
+    const { client, httpGet } = setup();
+    httpGet.mockResolvedValueOnce({
+      devices: [
+        batteryMouse,
+        { ...batteryMouse, display_name: "Duplicate identity" },
+        { ...unsupportedMouse, id: 45, genericDevicePropertiesStatus: "batteryLevels" },
+        null,
+      ],
+    });
+
+    await expect(client.discover()).resolves.toEqual([]);
   });
 });
 
@@ -391,6 +479,19 @@ describe("SteelSeries HTTPS transport", () => {
     await expect(
       get({ address: "steelseries.example:443", method: "GET", path: "/devices" })
     ).rejects.toThrow("loopback");
+    expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects path, query, and user-info suffixes in the GG authority", async () => {
+    const requestImpl = vi.fn();
+    const get = createSteelSeriesHttpsGetter(requestImpl as never);
+
+    await expect(
+      get({ address: "127.0.0.1:57192/sock", method: "GET", path: "/devices" })
+    ).rejects.toThrow("address");
+    await expect(
+      get({ address: "user@127.0.0.1:57192", method: "GET", path: "/devices" })
+    ).rejects.toThrow("address");
     expect(requestImpl).not.toHaveBeenCalled();
   });
 
