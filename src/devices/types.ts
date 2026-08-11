@@ -12,12 +12,11 @@ export interface DeviceRef {
   nativeId: string;
   name: string;
   deviceType: string;
-}
-
-export interface DeviceDescriptor extends DeviceRef {
   /** Cross-provider identity only when derived from a serial/container identity. */
   physicalId?: string;
 }
+
+export interface DeviceDescriptor extends DeviceRef {}
 
 export type BatteryLevel =
   | { kind: "percentage"; value: number }
