@@ -108,16 +108,16 @@ export function createSteelSeriesHttpsGetter(
         rejectUnauthorized: false,
       };
       const outgoing = requestImpl(options, (response) => {
+        response.on("error", (error) => finish(error));
+        response.on("aborted", () =>
+          finish(new Error("SteelSeries GG response was aborted"))
+        );
         const status = response.statusCode ?? 0;
         if (status < 200 || status >= 300) {
           response.resume();
           finish(new Error(`SteelSeries GG returned HTTP ${status}`));
           return;
         }
-        response.on("error", (error) => finish(error));
-        response.on("aborted", () =>
-          finish(new Error("SteelSeries GG response was aborted"))
-        );
         response.on("data", (chunk: Buffer | string) => {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           responseBytes += buffer.length;

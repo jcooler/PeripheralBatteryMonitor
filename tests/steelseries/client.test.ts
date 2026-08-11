@@ -419,4 +419,34 @@ describe("SteelSeries HTTPS transport", () => {
       get({ address: "127.0.0.1:57192", method: "GET", path: "/devices" })
     ).rejects.toThrow("connection reset");
   });
+
+  it("handles a response error after rejecting a non-success status", async () => {
+    const requestImpl = ((options: RequestOptions, callback: (response: EventEmitter & { statusCode: number; resume(): void }) => void) => {
+      void options;
+      const request = new EventEmitter() as EventEmitter & {
+        end(): void;
+        destroy(error?: Error): void;
+        setTimeout(ms: number, callback: () => void): void;
+      };
+      request.setTimeout = vi.fn();
+      request.destroy = vi.fn();
+      request.end = () => {
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          resume(): void;
+        };
+        response.statusCode = 503;
+        response.resume = vi.fn();
+        callback(response);
+        queueMicrotask(() => response.emit("error", new Error("reset after status")));
+      };
+      return request;
+    }) as never;
+    const get = createSteelSeriesHttpsGetter(requestImpl);
+
+    await expect(
+      get({ address: "127.0.0.1:57192", method: "GET", path: "/devices" })
+    ).rejects.toThrow("HTTP 503");
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+  });
 });
