@@ -46,6 +46,8 @@ it("never invokes a mutating SteelSeries operation across the full safe lifecycl
   // Startup + enumeration.
   await client.initialize();
   let [selected] = await client.discover();
+  let [legacySelected] = await client.getDevices();
+  await client.getBatteryInfo(legacySelected);
   // Polling + switching to a missing exact identity.
   await client.readStatus(selected);
   await client.readStatus({ ...selected, key: "steelseries:4", nativeId: "4" });
@@ -54,7 +56,10 @@ it("never invokes a mutating SteelSeries operation across the full safe lifecycl
   await client.readStatus(selected);
   // Software restart/reconnect and enumeration afterward.
   await client.reinitialize();
-  await client.discover();
+  [selected] = await client.discover();
+  await client.readStatus(selected);
+  [legacySelected] = await client.getDevices();
+  await client.getBatteryInfo(legacySelected);
 
   expect(requests.length).toBeGreaterThan(0);
   for (const request of requests) {

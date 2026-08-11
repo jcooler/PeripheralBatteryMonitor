@@ -18,6 +18,7 @@ import type { CoreProps, DevicesResponse, SteelSeriesDevice } from "./types";
 const PROVIDER_ID = "steelseries" as const;
 const PROVIDER_LABEL = "SteelSeries GG";
 const RECONNECT_DELAY_MS = 5_000;
+const MAX_RECONNECT_DELAY_MS = 60_000;
 const LIVE_DATA_MAX_AGE_MS = 15 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -113,11 +114,17 @@ export function createSteelSeriesHttpsGetter(
           finish(new Error(`SteelSeries GG returned HTTP ${status}`));
           return;
         }
+        response.on("error", (error) => finish(error));
+        response.on("aborted", () =>
+          finish(new Error("SteelSeries GG response was aborted"))
+        );
         response.on("data", (chunk: Buffer | string) => {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
           responseBytes += buffer.length;
           if (responseBytes > MAX_RESPONSE_BYTES) {
-            outgoing.destroy(new Error("SteelSeries response is too large"));
+            const error = new Error("SteelSeries response is too large");
+            finish(error);
+            outgoing.destroy(error);
             return;
           }
           chunks.push(buffer);
@@ -134,11 +141,14 @@ export function createSteelSeriesHttpsGetter(
       const onAbort = (): void => {
         const error = new Error("SteelSeries request aborted");
         error.name = "AbortError";
+        finish(error);
         outgoing.destroy(error);
       };
       outgoing.on("error", (error) => finish(error));
       outgoing.setTimeout(5_000, () => {
-        outgoing.destroy(new Error("SteelSeries GG request timed out"));
+        const error = new Error("SteelSeries GG request timed out");
+        finish(error);
+        outgoing.destroy(error);
       });
       if (request.signal?.aborted) onAbort();
       else request.signal?.addEventListener("abort", onAbort, { once: true });
@@ -170,7 +180,10 @@ export class SteelSeriesClient implements DeviceProvider {
   private headsetConnectionData = new Map<string, string>();
   private socket: SteelSeriesSocket | null = null;
   private socketGeneration = 0;
+  private lifecycleGeneration = 0;
+  private discoveryGeneration = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
   private destroyed = false;
 
   constructor(options: SteelSeriesClientOptions = {}) {
@@ -190,7 +203,8 @@ export class SteelSeriesClient implements DeviceProvider {
     if (this.initialized && this.encryptedAddress && this.socket) return true;
     if (this.initPromise) return this.initPromise;
 
-    const promise = this.doInitialize();
+    const generation = this.lifecycleGeneration;
+    const promise = this.doInitialize(generation);
     this.initPromise = promise;
     try {
       return await promise;
@@ -278,16 +292,19 @@ export class SteelSeriesClient implements DeviceProvider {
       batteryLevel:
         status.level.kind === "percentage" ? status.level.value : -1,
       isCharging: status.charging === true,
-      isConnected: status.state === "connected",
+      isConnected: status.state !== "disconnected",
     };
   }
 
   invalidateDiscovery(): void {
+    this.discoveryGeneration += 1;
     this.cachedDevices.clear();
   }
 
   destroy(): void {
     this.destroyed = true;
+    this.lifecycleGeneration += 1;
+    this.discoveryGeneration += 1;
     this.clearReconnectTimer();
     this.socketGeneration += 1;
     const socket = this.socket;
@@ -298,23 +315,29 @@ export class SteelSeriesClient implements DeviceProvider {
     this.encryptedAddress = null;
   }
 
-  private async doInitialize(): Promise<boolean> {
+  private async doInitialize(generation: number): Promise<boolean> {
     for (const path of this.corePropsPaths) {
       try {
         const raw = await this.readTextFile(path);
+        if (!this.isCurrentLifecycle(generation)) return false;
         const props = JSON.parse(raw) as Partial<CoreProps>;
         if (!props.encryptedAddress) continue;
         parseLoopbackAddress(props.encryptedAddress);
+        if (!this.isCurrentLifecycle(generation)) return false;
         this.encryptedAddress = props.encryptedAddress;
         this.initialized = true;
+        this.reconnectAttempt = 0;
         this.connectSocket(props.encryptedAddress);
         return true;
       } catch {
+        if (!this.isCurrentLifecycle(generation)) return false;
         // Try the next platform-specific coreProps path.
       }
     }
+    if (!this.isCurrentLifecycle(generation)) return false;
     this.initialized = false;
     this.encryptedAddress = null;
+    this.scheduleReconnect();
     return false;
   }
 
@@ -324,12 +347,22 @@ export class SteelSeriesClient implements DeviceProvider {
       throw new Error("SteelSeries GG unavailable");
     }
 
+    const lifecycleGeneration = this.lifecycleGeneration;
+    const discoveryGeneration = this.discoveryGeneration;
+    const address = this.encryptedAddress;
     const payload = (await this.httpGet({
-      address: this.encryptedAddress,
+      address,
       method: "GET",
       path: "/devices",
       signal,
     })) as Partial<DevicesResponse> | null;
+    if (
+      !this.isCurrentLifecycle(lifecycleGeneration) ||
+      discoveryGeneration !== this.discoveryGeneration ||
+      address !== this.encryptedAddress
+    ) {
+      throw new Error("SteelSeries engine generation changed");
+    }
     if (!payload || !Array.isArray(payload.devices)) {
       throw new Error("SteelSeries GG returned an invalid device list");
     }
@@ -363,6 +396,9 @@ export class SteelSeriesClient implements DeviceProvider {
       this.socket = null;
       this.initialized = false;
       this.encryptedAddress = null;
+      this.lifecycleGeneration += 1;
+      this.discoveryGeneration += 1;
+      this.cachedDevices.clear();
       this.clearLiveData();
       this.scheduleReconnect();
     });
@@ -440,7 +476,6 @@ export class SteelSeriesClient implements DeviceProvider {
       const existing = this.batteryData.get(nativeId);
       if (existing && typeof status === "string") {
         existing.charging = status === "PLUGGED_IN_CHARGING";
-        existing.observedAt = this.now();
       }
     }
   }
@@ -461,6 +496,8 @@ export class SteelSeriesClient implements DeviceProvider {
 
   private resetEngineGeneration(): void {
     this.clearReconnectTimer();
+    this.lifecycleGeneration += 1;
+    this.discoveryGeneration += 1;
     this.socketGeneration += 1;
     const socket = this.socket;
     this.socket = null;
@@ -479,17 +516,28 @@ export class SteelSeriesClient implements DeviceProvider {
   }
 
   private scheduleReconnect(): void {
-    this.clearReconnectTimer();
-    this.reconnectTimer = setTimeout(() => {
+    if (this.destroyed || this.reconnectTimer) return;
+    const delay = Math.min(
+      RECONNECT_DELAY_MS * 2 ** this.reconnectAttempt,
+      MAX_RECONNECT_DELAY_MS
+    );
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
-      if (!this.destroyed) void this.reinitialize();
-    }, RECONNECT_DELAY_MS);
+      if (this.destroyed) return;
+      const connected = await this.reinitialize();
+      if (!connected) this.scheduleReconnect();
+    }, delay);
   }
 
   private clearReconnectTimer(): void {
     if (!this.reconnectTimer) return;
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+  }
+
+  private isCurrentLifecycle(generation: number): boolean {
+    return !this.destroyed && this.lifecycleGeneration === generation;
   }
 }
 

@@ -13,6 +13,7 @@ import { SteelSeriesClient } from "../steelseries/client";
 import { LogitechClient } from "../logitech/client";
 import { XboxClient } from "../xbox/client";
 import type { BatteryInfo } from "../types";
+import { batteryStatusError } from "./battery-status";
 import {
   generateBatteryIcon,
   generateErrorIcon,
@@ -316,8 +317,9 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
         batteryInfo = await ssClient.getBatteryInfo(device);
       }
 
-      if (!batteryInfo || !batteryInfo.isConnected || batteryInfo.batteryLevel < 0) {
-        await actionHandle.setImage(generateErrorIcon("Disconnected", bg));
+      const statusError = batteryStatusError(batteryInfo);
+      if (statusError) {
+        await actionHandle.setImage(generateErrorIcon(statusError, bg));
         return;
       }
 

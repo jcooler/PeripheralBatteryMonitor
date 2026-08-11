@@ -9,6 +9,7 @@ import {
   type SteelSeriesSocket,
 } from "../../src/steelseries/client";
 import type { SteelSeriesDevice } from "../../src/steelseries/types";
+import { deferred } from "../helpers/deferred";
 
 class FakeSocket extends EventEmitter implements SteelSeriesSocket {
   readonly sent: unknown[] = [];
@@ -43,6 +44,26 @@ const arenaSpeaker: SteelSeriesDevice = {
   genericDevicePropertiesStatus: ["firmwareVersion"],
 };
 
+const batteryHeadset: SteelSeriesDevice = {
+  id: 43,
+  name: "arctis_nova_wireless",
+  display_name: "Arctis Nova Wireless",
+  type: 3,
+  deviceTypeName: "Headset",
+  connected: 1,
+  genericDevicePropertiesStatus: ["batteryLevels"],
+};
+
+const unsupportedMouse: SteelSeriesDevice = {
+  id: 44,
+  name: "rival_wired",
+  display_name: "Rival Wired",
+  type: 1,
+  deviceTypeName: "Mouse",
+  connected: 1,
+  genericDevicePropertiesStatus: ["batteryLevelsLegacy"],
+};
+
 const unsupportedHeadset: SteelSeriesDevice = {
   id: 88,
   name: "arctis_unsupported",
@@ -61,7 +82,15 @@ function setup() {
   );
   const httpGet = vi.fn(async (request: SteelSeriesHttpRequest) => {
     requests.push(request);
-    return { devices: [batteryMouse, arenaSpeaker, unsupportedHeadset] };
+    return {
+      devices: [
+        batteryMouse,
+        batteryHeadset,
+        arenaSpeaker,
+        unsupportedHeadset,
+        unsupportedMouse,
+      ],
+    };
   });
   const createSocket = vi.fn(() => {
     const socket = new FakeSocket();
@@ -101,7 +130,10 @@ describe("passive SteelSeries GG client", () => {
 
     const devices = await client.discover();
 
-    expect(devices.map((device) => device.key)).toEqual(["steelseries:42"]);
+    expect(devices.map((device) => device.key)).toEqual([
+      "steelseries:42",
+      "steelseries:43",
+    ]);
     expect(devices[0]).toMatchObject({
       providerLabel: "SteelSeries GG",
       name: "Aerox 5 Wireless",
@@ -184,6 +216,23 @@ describe("passive SteelSeries GG client", () => {
     await client.reinitialize();
     expect(sockets).toHaveLength(2);
     oldSocket.emit("close");
+    oldSocket.emit(
+      "message",
+      Buffer.from(
+        JSON.stringify({
+          event: "device_event",
+          data: { id: 42, battery_status: { charging: 0, level: 99 } },
+        })
+      )
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets).toHaveLength(2);
+
+    const [mouse] = await client.discover();
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+    });
+
     client.destroy();
     sockets[1].emit("close");
     await vi.advanceTimersByTimeAsync(10_000);
@@ -199,14 +248,107 @@ describe("passive SteelSeries GG client", () => {
     await expect(client.initialize()).resolves.toBe(true);
     expect(readTextFile).toHaveBeenCalledTimes(2);
   });
+
+  it("does not reopen a socket when destroy wins an initialization race", async () => {
+    const coreProps = deferred<string>();
+    const createSocket = vi.fn(() => new FakeSocket());
+    const client = new SteelSeriesClient({
+      corePropsPaths: ["coreProps.json"],
+      readTextFile: vi.fn(() => coreProps.promise),
+      httpGet: vi.fn(),
+      createSocket,
+    });
+
+    const initialization = client.initialize();
+    client.destroy();
+    coreProps.resolve(JSON.stringify({ encryptedAddress: "127.0.0.1:57192" }));
+
+    await expect(initialization).resolves.toBe(false);
+    expect(createSocket).not.toHaveBeenCalled();
+  });
+
+  it("keeps retrying after a reconnect attempt finds GG temporarily unavailable", async () => {
+    vi.useFakeTimers();
+    const { client, readTextFile, sockets } = setup();
+    await client.initialize();
+    readTextFile
+      .mockRejectedValueOnce(new Error("GG restarting"))
+      .mockResolvedValue(JSON.stringify({ encryptedAddress: "127.0.0.1:57192" }));
+
+    sockets[0].emit("close");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(readTextFile).toHaveBeenCalledTimes(3);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("discards a device response from an older engine generation", async () => {
+    const oldResponse = deferred<unknown>();
+    const { client, httpGet } = setup();
+    httpGet.mockImplementationOnce(() => oldResponse.promise);
+
+    const discovery = client.discover();
+    await vi.waitFor(() => expect(httpGet).toHaveBeenCalledTimes(1));
+    await client.reinitialize();
+    oldResponse.resolve({ devices: [batteryMouse] });
+
+    await expect(discovery).rejects.toThrow("generation changed");
+  });
+
+  it("does not refresh an old battery level timestamp from charging-only events", async () => {
+    let now = 0;
+    const sockets: FakeSocket[] = [];
+    const client = new SteelSeriesClient({
+      corePropsPaths: ["coreProps.json"],
+      readTextFile: vi.fn(async () => JSON.stringify({ encryptedAddress: "127.0.0.1:57192" })),
+      httpGet: vi.fn(async () => ({ devices: [batteryMouse] })),
+      createSocket: vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      }),
+      now: () => now,
+      liveDataMaxAgeMs: 100,
+    });
+    const [mouse] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, battery_status: { charging: 0, level: 50 } },
+    })));
+    now = 99;
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, chargingEvent: { chargingStatus: "PLUGGED_IN_CHARGING" } },
+    })));
+    now = 101;
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+  });
+
+  it("keeps unavailable passive data distinct from a disconnected device in the legacy wrapper", async () => {
+    const { client } = setup();
+    const [device] = await client.getDevices();
+
+    await expect(client.getBatteryInfo(device)).resolves.toMatchObject({
+      batteryLevel: -1,
+      isConnected: true,
+    });
+  });
 });
 
 describe("SteelSeries HTTPS transport", () => {
   it("uses a loopback-scoped GET with request-local TLS and never changes the TLS environment", async () => {
     const original = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
     const optionsSeen: RequestOptions[] = [];
+    const environmentSeen: Array<string | undefined> = [];
     const requestImpl = ((options: RequestOptions, callback: (response: EventEmitter & { statusCode: number }) => void) => {
       optionsSeen.push(options);
+      environmentSeen.push(process.env.NODE_TLS_REJECT_UNAUTHORIZED);
       const request = new EventEmitter() as EventEmitter & {
         end(): void;
         destroy(error?: Error): void;
@@ -238,6 +380,7 @@ describe("SteelSeries HTTPS transport", () => {
         rejectUnauthorized: false,
       }),
     ]);
+    expect(environmentSeen).toEqual([original]);
     expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBe(original);
   });
 
@@ -249,5 +392,31 @@ describe("SteelSeries HTTPS transport", () => {
       get({ address: "steelseries.example:443", method: "GET", path: "/devices" })
     ).rejects.toThrow("loopback");
     expect(requestImpl).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the HTTPS response stream aborts mid-body", async () => {
+    const requestImpl = ((options: RequestOptions, callback: (response: EventEmitter & { statusCode: number }) => void) => {
+      void options;
+      const request = new EventEmitter() as EventEmitter & {
+        end(): void;
+        destroy(error?: Error): void;
+        setTimeout(ms: number, callback: () => void): void;
+      };
+      request.setTimeout = vi.fn();
+      request.destroy = vi.fn();
+      request.end = () => {
+        const response = new EventEmitter() as EventEmitter & { statusCode: number };
+        response.statusCode = 200;
+        callback(response);
+        response.emit("data", Buffer.from('{"devices":'));
+        queueMicrotask(() => response.emit("error", new Error("connection reset")));
+      };
+      return request;
+    }) as never;
+    const get = createSteelSeriesHttpsGetter(requestImpl);
+
+    await expect(
+      get({ address: "127.0.0.1:57192", method: "GET", path: "/devices" })
+    ).rejects.toThrow("connection reset");
   });
 });
