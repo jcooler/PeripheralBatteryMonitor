@@ -84,7 +84,7 @@ describe("provider-qualified device identity", () => {
     const result = await catalog.discover();
 
     expect(result.devices).toHaveLength(1);
-    expect(result.devices[0].key).toBe("steelseries:1");
+    expect(result.devices[0].key).toBe("windows:USB-2");
   });
 });
 
@@ -132,6 +132,35 @@ describe("discovery cache", () => {
     await catalog.discover();
 
     expect(ss.discover).toHaveBeenCalledTimes(1);
+    expect(windows.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not commit a discovery result invalidated while it was in flight", async () => {
+    const oldRequest = deferred<DeviceDescriptor[]>();
+    const newRequest = deferred<DeviceDescriptor[]>();
+    const windows = provider("windows", []);
+    windows.discover
+      .mockImplementationOnce(() => oldRequest.promise)
+      .mockImplementationOnce(() => newRequest.promise);
+    const catalog = new DeviceCatalog([windows], { now: () => 0 });
+
+    const stale = catalog.discover();
+    catalog.invalidateDiscovery("windows");
+    const current = catalog.discover();
+    newRequest.resolve([descriptor("windows", "new", "Current")]);
+    oldRequest.resolve([descriptor("windows", "old", "Stale")]);
+
+    await expect(current).resolves.toMatchObject({
+      devices: [{ key: "windows:new" }],
+      errors: [],
+    });
+    await expect(stale).resolves.toMatchObject({
+      devices: [],
+      errors: [{ message: "Discovery invalidated" }],
+    });
+    await expect(catalog.discover()).resolves.toMatchObject({
+      devices: [{ key: "windows:new" }],
+    });
     expect(windows.discover).toHaveBeenCalledTimes(2);
   });
 });

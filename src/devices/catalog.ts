@@ -134,6 +134,9 @@ export class DeviceCatalog {
 
     const request = provider.discover(signal).then((devices) => {
       const checked = devices.map((device) => validateDescriptor(provider, device));
+      if (this.cache.get(provider.id) !== entry) {
+        throw new Error("Discovery invalidated");
+      }
       entry.devices = checked;
       entry.cachedAt = this.now();
       return checked;
@@ -162,18 +165,51 @@ function validateDescriptor(
 function deduplicateByPhysicalIdentity(
   devices: DeviceDescriptor[]
 ): DeviceDescriptor[] {
+  const preferredByPhysicalId = new Map<string, DeviceDescriptor>();
+  for (const device of devices) {
+    if (!device.physicalId) continue;
+    const preferred = preferredByPhysicalId.get(device.physicalId);
+    if (
+      !preferred ||
+      providerPriority(device.provider) < providerPriority(preferred.provider)
+    ) {
+      preferredByPhysicalId.set(device.physicalId, device);
+    }
+  }
+
   const seenKeys = new Set<string>();
   const seenPhysicalIds = new Set<string>();
   const result: DeviceDescriptor[] = [];
 
   for (const device of devices) {
     if (seenKeys.has(device.key)) continue;
+    if (
+      device.physicalId &&
+      preferredByPhysicalId.get(device.physicalId) !== device
+    ) {
+      continue;
+    }
     if (device.physicalId && seenPhysicalIds.has(device.physicalId)) continue;
     seenKeys.add(device.key);
     if (device.physicalId) seenPhysicalIds.add(device.physicalId);
     result.push(device);
   }
   return result;
+}
+
+function providerPriority(provider: ProviderId): number {
+  switch (provider) {
+    case "hid":
+      return 0;
+    case "windows":
+      return 1;
+    case "logitech":
+      return 2;
+    case "steelseries":
+      return 3;
+    case "xinput":
+      return 4;
+  }
 }
 
 function errorMessage(error: unknown): string {
