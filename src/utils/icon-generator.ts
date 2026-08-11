@@ -11,6 +11,13 @@ export interface IconOptions {
   backgroundColor?: string;
 }
 
+export interface QualitativeBatteryInfo {
+  deviceName: string;
+  deviceType: string;
+  level: "empty" | "low" | "medium" | "full";
+  providerLabel: string;
+}
+
 const DEFAULTS: Required<IconOptions> = {
   showPercentage: true,
   showDeviceType: false,
@@ -40,7 +47,9 @@ export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): s
   // Compute vertical layout based on which labels are shown
   const topLabel = o.showDeviceType;
   const bottomLabel1 = o.showDeviceName;
-  const bottomLabel2 = o.showStatusText && (info.isCharging || level <= 15);
+  const bottomLabel2 =
+    o.showStatusText &&
+    (info.isCharging || level <= 15 || Boolean(info.providerLabel));
 
   // Battery vertical center shifts based on labels
   const topOffset = topLabel ? 14 : 0;
@@ -80,8 +89,12 @@ export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): s
     ? `<text x="72" y="${by + bh + 16}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#8b949e">${esc(truncate(info.deviceName, 20))}</text>`
     : "";
 
+  const statusParts = [
+    info.isCharging ? "Charging" : level <= 15 ? "Low Battery" : "",
+    info.providerLabel ?? "",
+  ].filter(Boolean);
   const statusLabel = bottomLabel2
-    ? `<text x="72" y="${by + bh + (bottomLabel1 ? 30 : 16)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="${color}">${info.isCharging ? "Charging" : "Low Battery"}</text>`
+    ? `<text x="72" y="${by + bh + (bottomLabel1 ? 30 : 16)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="${color}">${esc(truncate(statusParts.join(" · "), 28))}</text>`
     : "";
 
   // Percentage text — centered in the battery rectangle
@@ -103,6 +116,62 @@ export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): s
   ${statusLabel}
 </svg>`;
 
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
+export function generateQualitativeBatteryIcon(
+  info: QualitativeBatteryInfo,
+  options?: IconOptions
+): string {
+  const o = opts(options);
+  const visualFill = {
+    empty: 0,
+    low: 25,
+    medium: 60,
+    full: 100,
+  }[info.level];
+  const color =
+    info.level === "full"
+      ? "#4CAF50"
+      : info.level === "medium"
+        ? "#FFA726"
+        : info.level === "low"
+          ? "#FF7043"
+          : "#EF5350";
+  const topLabel = o.showDeviceType;
+  const bottomLabel1 = o.showDeviceName;
+  const bottomLabel2 = o.showStatusText;
+  const topOffset = topLabel ? 14 : 0;
+  const bottomOffset = (bottomLabel1 ? 14 : 0) + (bottomLabel2 ? 12 : 0);
+  const centerY = (SIZE + topOffset - bottomOffset) / 2;
+  const bw = 112;
+  const bh = 54;
+  const bx = (SIZE - bw - 10) / 2;
+  const by = centerY - bh / 2;
+  const pad = 3;
+  const fillW = Math.round((bw - pad * 2) * (visualFill / 100));
+  const typeLabel = topLabel
+    ? `<text x="72" y="${by - 10}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${o.deviceTypeFontSize}" font-weight="600" fill="#8b949e">${esc(info.deviceType.toUpperCase())}</text>`
+    : "";
+  const nameLabel = bottomLabel1
+    ? `<text x="72" y="${by + bh + 16}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#8b949e">${esc(truncate(info.deviceName, 20))}</text>`
+    : "";
+  const sourceLabel = bottomLabel2
+    ? `<text x="72" y="${by + bh + (bottomLabel1 ? 30 : 16)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="${color}">${esc(truncate(info.providerLabel, 28))}</text>`
+    : "";
+  const levelLabel = o.showPercentage
+    ? `<text x="67" y="${by + bh / 2 + 7}" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" font-weight="bold" fill="white">${info.level.toUpperCase()}</text>`
+    : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">
+  <rect width="${SIZE}" height="${SIZE}" fill="${validateColor(o.backgroundColor)}"/>
+  ${typeLabel}
+  <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="7" fill="none" stroke="#30363d" stroke-width="3"/>
+  <rect x="${bx + bw - 1}" y="${by + 15}" width="10" height="24" rx="3" fill="#30363d"/>
+  <rect x="${bx + pad}" y="${by + pad}" width="${fillW}" height="${bh - pad * 2}" rx="6" fill="${color}" opacity="0.85"/>
+  ${levelLabel}
+  ${nameLabel}
+  ${sourceLabel}
+</svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 

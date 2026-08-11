@@ -9,6 +9,8 @@ export interface BatteryInfo {
   isCharging: boolean;
   /** Whether the device is connected */
   isConnected: boolean;
+  /** Human-readable source of this status, shown when status text is enabled. */
+  providerLabel?: string;
   /** For headsets: base station battery level */
   chargerLevel?: number;
 }
