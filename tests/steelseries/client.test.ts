@@ -208,6 +208,76 @@ describe("passive SteelSeries GG client", () => {
     expect(requests).toEqual([]);
   });
 
+  it("recovers an exact identity after a transient same-endpoint socket loss", async () => {
+    vi.useFakeTimers();
+    const { client, requests, sockets } = setup();
+    const [mouse] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, battery_status: { charging: 0, level: 63 } },
+    })));
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      level: { kind: "percentage", value: 63 },
+    });
+
+    sockets[0].emit("close");
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "SteelSeries device not found",
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    sockets[1].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, battery_status: { charging: 0, level: 47 } },
+    })));
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 47 },
+    });
+    expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: "/devices" },
+      { method: "GET", path: "/devices" },
+    ]);
+    expect(sockets.flatMap((socket) => socket.sent)).toEqual([]);
+  });
+
+  it("never displays a recycled numeric ID when its inventory metadata changed", async () => {
+    vi.useFakeTimers();
+    const { client, httpGet, readTextFile, requests, sockets } = setup();
+    const [oldMouse] = await client.discover();
+    const replacement = {
+      ...batteryMouse,
+      name: "replacement_wireless",
+      display_name: "Replacement Wireless",
+    };
+    readTextFile.mockResolvedValue(
+      JSON.stringify({ encryptedAddress: "127.0.0.1:57193" })
+    );
+    httpGet.mockResolvedValue({ devices: [replacement] });
+
+    sockets[0].emit("close");
+    await vi.advanceTimersByTimeAsync(5_000);
+    sockets[1].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, battery_status: { charging: 0, level: 99 } },
+    })));
+
+    await expect(client.readStatus(oldMouse)).resolves.toMatchObject({
+      state: "unavailable",
+      level: { kind: "unavailable" },
+      detail: "SteelSeries identity metadata changed",
+    });
+    const [newDevice] = await client.discover();
+    expect(newDevice).toMatchObject({
+      key: "steelseries:42",
+      nativeId: "42",
+      name: "Replacement Wireless",
+    });
+    expect(newDevice.key).toBe(oldMouse.key);
+    expect(requests.every(({ method, path }) => method === "GET" && path === "/devices")).toBe(true);
+  });
+
   it("ignores stale socket callbacks and destroy never schedules reconnect", async () => {
     vi.useFakeTimers();
     const { client, readTextFile, sockets } = setup();

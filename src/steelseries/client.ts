@@ -179,6 +179,7 @@ export class SteelSeriesClient implements DeviceProvider {
   private initialized = false;
   private initPromise: Promise<boolean> | null = null;
   private cachedDevices = new Map<string, SteelSeriesDevice>();
+  private inventoryWasDiscovered = false;
   private batteryData = new Map<string, LiveBattery>();
   private connectionData = new Map<string, boolean>();
   private headsetConnectionData = new Map<string, string>();
@@ -242,6 +243,13 @@ export class SteelSeriesClient implements DeviceProvider {
     if (!device) {
       return unavailableStatus(ref, this.now(), "SteelSeries device not found");
     }
+    if (!matchesConfiguredMetadata(device, ref)) {
+      return unavailableStatus(
+        ref,
+        this.now(),
+        "SteelSeries identity metadata changed"
+      );
+    }
 
     const connected = this.isConnected(device);
     if (!connected) {
@@ -256,7 +264,7 @@ export class SteelSeriesClient implements DeviceProvider {
       };
     }
 
-    const battery = this.batteryData.get(ref.nativeId);
+    const battery = this.batteryData.get(String(device.id));
     if (
       !battery ||
       this.now() - battery.observedAt > this.liveDataMaxAgeMs
@@ -290,6 +298,9 @@ export class SteelSeriesClient implements DeviceProvider {
   /** Compatibility wrapper; intentionally performs no network operation. */
   async getBatteryInfo(device: SteelSeriesDevice): Promise<BatteryInfo> {
     const ref = toDescriptor(device);
+    if (this.cachedDevices.get(ref.nativeId) !== device) {
+      return unavailableLegacyBattery(device);
+    }
     const status = await this.readStatus(ref);
     return {
       deviceId: device.id,
@@ -316,6 +327,8 @@ export class SteelSeriesClient implements DeviceProvider {
     const socket = this.socket;
     this.socket = null;
     socket?.close();
+    this.cachedDevices.clear();
+    this.inventoryWasDiscovered = false;
     this.clearLiveData();
     this.initialized = false;
     this.encryptedAddress = null;
@@ -391,6 +404,7 @@ export class SteelSeriesClient implements DeviceProvider {
     this.cachedDevices = new Map(
       batteryDevices.map((device) => [String(device.id), device])
     );
+    this.inventoryWasDiscovered = true;
     return batteryDevices;
   }
 
@@ -596,7 +610,15 @@ export class SteelSeriesClient implements DeviceProvider {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.destroyed) return;
+      const restoreInventory = this.inventoryWasDiscovered;
       const connected = await this.reinitialize();
+      if (connected && restoreInventory) {
+        try {
+          await this.fetchDevices();
+        } catch {
+          // The configured identity remains unavailable until a later refresh.
+        }
+      }
       if (!connected) this.scheduleReconnect();
     }, delay);
   }
@@ -621,6 +643,27 @@ function toDescriptor(device: SteelSeriesDevice): DeviceDescriptor {
     nativeId,
     name: device.display_name || device.name,
     deviceType: device.deviceTypeName || String(device.type),
+  };
+}
+
+function matchesConfiguredMetadata(
+  device: SteelSeriesDevice,
+  ref: DeviceRef
+): boolean {
+  return (
+    ref.name === (device.display_name || device.name) &&
+    ref.deviceType === (device.deviceTypeName || String(device.type))
+  );
+}
+
+function unavailableLegacyBattery(device: SteelSeriesDevice): BatteryInfo {
+  return {
+    deviceId: device.id,
+    deviceName: device.display_name || device.name,
+    deviceType: device.deviceTypeName || String(device.type),
+    batteryLevel: -1,
+    isCharging: false,
+    isConnected: false,
   };
 }
 
