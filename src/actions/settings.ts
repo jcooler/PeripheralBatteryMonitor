@@ -171,7 +171,7 @@ function parseSelectedDevices(values: unknown[]): DeviceRef[] {
 }
 
 function migrateLegacyDevice(raw: Record<string, unknown>): DeviceRef[] {
-  const name =
+  const rawName =
     typeof raw.deviceName === "string" && raw.deviceName.trim()
       ? raw.deviceName.trim()
       : "Configured device";
@@ -182,7 +182,13 @@ function migrateLegacyDevice(raw: Record<string, unknown>): DeviceRef[] {
     Number.isSafeInteger(raw.deviceId) &&
     raw.deviceId >= 0
   ) {
-    return [legacyRef("steelseries", String(raw.deviceId), name)];
+    return [
+      legacyRef(
+        "steelseries",
+        String(raw.deviceId),
+        stripLegacyPrefix(rawName, "steelseries")
+      ),
+    ];
   }
   if (
     raw.deviceBrand === "logitech" &&
@@ -193,7 +199,7 @@ function migrateLegacyDevice(raw: Record<string, unknown>): DeviceRef[] {
       legacyRef(
         "logitech",
         `session:${raw.logiDeviceId.trim()}`,
-        name
+        stripLegacyPrefix(rawName, "logitech")
       ),
     ];
   }
@@ -204,9 +210,28 @@ function migrateLegacyDevice(raw: Record<string, unknown>): DeviceRef[] {
     raw.xboxIndex >= 0 &&
     raw.xboxIndex <= 3
   ) {
-    return [legacyRef("xinput", `slot:${raw.xboxIndex}`, name, "Controller")];
+    return [
+      legacyRef(
+        "xinput",
+        `slot:${raw.xboxIndex}`,
+        stripLegacyPrefix(rawName, "xinput"),
+        "Controller"
+      ),
+    ];
   }
   return [];
+}
+
+function stripLegacyPrefix(name: string, provider: ProviderId): string {
+  const pattern =
+    provider === "steelseries"
+      ? /^\[SS\]\s*/
+      : provider === "logitech"
+        ? /^\[Logi\]\s*/
+        : provider === "xinput"
+          ? /^\[Xbox\]\s*/
+          : null;
+  return pattern ? name.replace(pattern, "") || "Configured device" : name;
 }
 
 function legacyRef(

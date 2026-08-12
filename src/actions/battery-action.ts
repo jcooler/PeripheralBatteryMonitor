@@ -1,5 +1,4 @@
 import streamDeck, {
-  action,
   DidReceiveSettingsEvent,
   KeyDownEvent,
   SendToPluginEvent,
@@ -11,9 +10,6 @@ import type { JsonObject, JsonValue } from "@elgato/utils";
 
 import { DeviceCatalog } from "../devices/catalog";
 import type { DeviceDescriptor, DiscoveryResult } from "../devices/types";
-import { HidBatteryProvider } from "../hid/client";
-import { LogitechClient } from "../logitech/client";
-import { SteelSeriesClient } from "../steelseries/client";
 import type { BatteryInfo } from "../types";
 import {
   generateBatteryIcon,
@@ -22,10 +18,9 @@ import {
   generateQualitativeBatteryIcon,
   type IconOptions,
 } from "../utils/icon-generator";
-import { WindowsBluetoothProvider } from "../windows/client";
-import { XInputProvider } from "../xbox/client";
 import { BatteryRuntime } from "./battery-runtime";
 import { InspectorMessenger } from "./inspector-messenger";
+import { createActiveProviders } from "./provider-set";
 import type { SessionRender } from "./action-session";
 import {
   parseBatterySettings,
@@ -60,27 +55,43 @@ interface ActionHandle {
   setTitle(title: string): Promise<void>;
 }
 
-const providers = [
-  new HidBatteryProvider(),
-  new WindowsBluetoothProvider(),
-  new LogitechClient(),
-  new SteelSeriesClient(),
-  new XInputProvider(),
-];
+const catalog = new DeviceCatalog(createActiveProviders());
 
-const catalog = new DeviceCatalog(providers);
+export type BatteryActionRuntime = Pick<
+  BatteryRuntime,
+  | "appear"
+  | "updateSettings"
+  | "keyDown"
+  | "manualRefresh"
+  | "disappear"
+  | "refreshDevices"
+>;
 
-@action({ UUID: "com.jcooler.peripheral-battery.monitor" })
+export interface BatteryActionOptions {
+  runtime?: BatteryActionRuntime;
+  inspector?: InspectorMessenger<JsonObject>;
+}
+
 export class BatteryAction extends SingletonAction<BatteryActionSettings> {
   private readonly handles = new Map<string, ActionHandle>();
-  private readonly runtime = new BatteryRuntime(
-    catalog,
-    (contextId, render) => this.render(contextId, render)
-  );
-  private readonly inspector = new InspectorMessenger<JsonObject>({
-    activeContextId: () => streamDeck.ui.action?.id,
-    send: (message) => streamDeck.ui.sendToPropertyInspector(message),
-  });
+  private readonly runtime: BatteryActionRuntime;
+  private readonly inspector: InspectorMessenger<JsonObject>;
+
+  constructor(options: BatteryActionOptions = {}) {
+    super();
+    this.runtime =
+      options.runtime ??
+      new BatteryRuntime(
+        catalog,
+        (contextId, render) => this.render(contextId, render)
+      );
+    this.inspector =
+      options.inspector ??
+      new InspectorMessenger<JsonObject>({
+        activeContextId: () => streamDeck.ui.action?.id,
+        send: (message) => streamDeck.ui.sendToPropertyInspector(message),
+      });
+  }
 
   override async onWillAppear(
     ev: WillAppearEvent<BatteryActionSettings>

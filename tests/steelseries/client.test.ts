@@ -200,7 +200,7 @@ describe("passive SteelSeries GG client", () => {
     const [legacyMouse] = parseBatterySettings({
       deviceBrand: "steelseries",
       deviceId: 42,
-      deviceName: "Aerox 5 Wireless",
+      deviceName: "[SS] Aerox 5 Wireless",
     }).settings.selectedDevices;
     await client.discover();
     sockets[0].emit("message", Buffer.from(JSON.stringify({

@@ -10,6 +10,7 @@ import {
   mergeSettings,
   moveSelectedDevice,
   renderDeviceList,
+  selectedDevicesFromSettings,
   setDeviceIncluded,
 } from "../../com.jcooler.peripheral-battery.sdPlugin/ui/device-list.js";
 
@@ -72,6 +73,33 @@ describe("Property Inspector device-list model", () => {
       included: false,
       available: true,
       device: { key: "windows:BTH-2" },
+    });
+  });
+
+  it("retains prefixed v1 selections as exact unavailable rows", () => {
+    const legacySettings = {
+      deviceBrand: "steelseries",
+      deviceId: 7,
+      deviceName: "[SS] Saved Aerox",
+    };
+
+    expect(selectedDevicesFromSettings(legacySettings, [])).toEqual([
+      expect.objectContaining({
+        key: "steelseries:7",
+        providerLabel: "SteelSeries GG",
+        nativeId: "7",
+        name: "Saved Aerox",
+        deviceType: "Device",
+      }),
+    ]);
+    const rows = buildDeviceRows(
+      [],
+      selectedDevicesFromSettings(legacySettings, [])
+    );
+    expect(rows[0]).toMatchObject({
+      included: true,
+      available: false,
+      initial: true,
     });
   });
 
@@ -391,6 +419,35 @@ describe("Property Inspector device-list model", () => {
       ],
     });
     expect(sent.every((message) => message.action && message.context && message.event === "setSettings")).toBe(true);
+  });
+
+  it("preserves a legacy unavailable selection when including another device", () => {
+    const sent: any[] = [];
+    const controller = createInspectorController({
+      send: (message) => sent.push(message),
+      view: { applySettings() {}, renderRows() {}, showStatus() {} },
+    });
+    controller.open({
+      action: "action",
+      context: "context",
+      settings: {
+        deviceBrand: "steelseries",
+        deviceId: 7,
+        deviceName: "[SS] Saved Aerox",
+      },
+    });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard],
+    });
+    sent.length = 0;
+
+    controller.include(windowsKeyboard, true);
+
+    expect(sent[0].payload.selectedDevices.map((device: any) => device.key)).toEqual([
+      "steelseries:7",
+      "windows:BTH-2",
+    ]);
   });
 
   it("keeps configured missing devices visible across empty and error discovery results", () => {

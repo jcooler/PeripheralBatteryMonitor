@@ -44,6 +44,31 @@ export function buildDeviceRows(discoveredDevices, selectedDevices) {
   return rows;
 }
 
+export function selectedDevicesFromSettings(settings, discoveredDevices = []) {
+  if (!isRecord(settings)) return [];
+  const hasOrderedList = Array.isArray(settings.selectedDevices);
+  const selected = hasOrderedList
+    ? uniqueDevices(settings.selectedDevices)
+    : legacySelectedDevice(settings);
+  if (selected.length === 0) return [];
+
+  const discoveredByKey = new Map(
+    uniqueDevices(discoveredDevices).map((device) => [device.key, device])
+  );
+  return selected.map((saved) => {
+    const current = discoveredByKey.get(saved.key);
+    if (!current) return saved;
+    if (
+      !hasOrderedList &&
+      saved.provider === "steelseries" &&
+      saved.name !== current.name
+    ) {
+      return saved;
+    }
+    return current;
+  });
+}
+
 export function setDeviceIncluded(selectedDevices, candidate, included) {
   const selected = uniqueDevices(selectedDevices);
   const device = normalizeDevice(candidate);
@@ -122,9 +147,12 @@ export function createInspectorController({ send, view }) {
   let settings = {};
   let discoveredDevices = [];
 
+  const selectedDevices = () =>
+    selectedDevicesFromSettings(settings, discoveredDevices);
+
   const render = () => {
     view.renderRows(
-      buildDeviceRows(discoveredDevices, settings.selectedDevices),
+      buildDeviceRows(discoveredDevices, selectedDevices()),
       settings
     );
   };
@@ -169,7 +197,7 @@ export function createInspectorController({ send, view }) {
       persist({
         schemaVersion: 2,
         selectedDevices: setDeviceIncluded(
-          settings.selectedDevices,
+          selectedDevices(),
           device,
           included
         ),
@@ -180,7 +208,7 @@ export function createInspectorController({ send, view }) {
       persist({
         schemaVersion: 2,
         selectedDevices: moveSelectedDevice(
-          settings.selectedDevices,
+          selectedDevices(),
           key,
           direction
         ),
@@ -196,6 +224,66 @@ export function createInspectorController({ send, view }) {
       sendPluginEvent("refreshDevices");
     },
   };
+}
+
+function legacySelectedDevice(settings) {
+  const rawName =
+    typeof settings.deviceName === "string" && settings.deviceName.trim()
+      ? settings.deviceName.trim()
+      : "Configured device";
+
+  if (
+    settings.deviceBrand === "steelseries" &&
+    typeof settings.deviceId === "number" &&
+    Number.isSafeInteger(settings.deviceId) &&
+    settings.deviceId >= 0
+  ) {
+    return [normalizeDevice({
+      provider: "steelseries",
+      nativeId: String(settings.deviceId),
+      name: stripLegacyPrefix(rawName, "steelseries"),
+      deviceType: "Device",
+    })].filter(Boolean);
+  }
+  if (
+    settings.deviceBrand === "logitech" &&
+    typeof settings.logiDeviceId === "string" &&
+    settings.logiDeviceId.trim()
+  ) {
+    return [normalizeDevice({
+      provider: "logitech",
+      nativeId: `session:${settings.logiDeviceId.trim()}`,
+      name: stripLegacyPrefix(rawName, "logitech"),
+      deviceType: "Device",
+    })].filter(Boolean);
+  }
+  if (
+    settings.deviceBrand === "xbox" &&
+    typeof settings.xboxIndex === "number" &&
+    Number.isInteger(settings.xboxIndex) &&
+    settings.xboxIndex >= 0 &&
+    settings.xboxIndex <= 3
+  ) {
+    return [normalizeDevice({
+      provider: "xinput",
+      nativeId: `slot:${settings.xboxIndex}`,
+      name: stripLegacyPrefix(rawName, "xinput"),
+      deviceType: "Controller",
+    })].filter(Boolean);
+  }
+  return [];
+}
+
+function stripLegacyPrefix(name, provider) {
+  const pattern =
+    provider === "steelseries"
+      ? /^\[SS\]\s*/
+      : provider === "logitech"
+        ? /^\[Logi\]\s*/
+        : provider === "xinput"
+          ? /^\[Xbox\]\s*/
+          : null;
+  return pattern ? name.replace(pattern, "") || "Configured device" : name;
 }
 
 export function describeDiscoveryState(payload) {

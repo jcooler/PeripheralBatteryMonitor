@@ -83,31 +83,34 @@ describe("battery action settings", () => {
     const steelSeries = parseBatterySettings({
       deviceBrand: "steelseries",
       deviceId: 42,
-      deviceName: "Aerox",
+      deviceName: "[SS] Aerox",
     });
     const logitech = parseBatterySettings({
       deviceBrand: "logitech",
       deviceId: 5,
       logiDeviceId: "dev00000005",
-      deviceName: "G Pro",
+      deviceName: "[Logi] G Pro",
     });
     const xinput = parseBatterySettings({
       deviceBrand: "xbox",
       xboxIndex: 2,
-      deviceName: "Controller",
+      deviceName: "[Xbox] Controller 3",
     });
 
     expect(steelSeries.settings.selectedDevices[0]).toMatchObject({
       key: "steelseries:42",
       nativeId: "42",
+      name: "Aerox",
     });
     expect(logitech.settings.selectedDevices[0]).toMatchObject({
       key: "logitech:session%3Adev00000005",
       nativeId: "session:dev00000005",
+      name: "G Pro",
     });
     expect(xinput.settings.selectedDevices[0]).toMatchObject({
       key: "xinput:slot%3A2",
       nativeId: "slot:2",
+      name: "Controller 3",
     });
     expect(steelSeries.migrated && logitech.migrated && xinput.migrated).toBe(true);
   });
