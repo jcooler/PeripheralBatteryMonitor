@@ -1,12 +1,12 @@
 {
   "name": "com.jcooler.peripheral-battery",
   "version": "1.1.0",
-  "description": "Stream Deck plugin to display battery levels for SteelSeries and Logitech wireless peripherals",
+  "description": "Stream Deck plugin for passive peripheral battery status and ordered device cycling",
   "private": true,
   "main": "src/plugin.ts",
   "type": "module",
   "scripts": {
-    "build": "rollup -c",
+    "build": "rollup -c && node scripts/copy-native-runtime.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
