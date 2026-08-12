@@ -195,4 +195,35 @@ describe("refresh concurrency", () => {
     expect(renders.some((render) => render.kind === "status")).toBe(false);
     expect(readStatus).toHaveBeenCalledTimes(1);
   });
+
+  it("waits for deliberate resume recovery before reading status again", async () => {
+    const a = ref("A");
+    const resumed = deferred<void>();
+    const readStatus = vi.fn(async () => status(a, 50));
+    const onResume = vi.fn(() => resumed.promise);
+    let now = 0;
+    let scheduled: (() => void) | null = null;
+    const session = new ActionSession({
+      readStatus,
+      render: vi.fn(),
+      onResume,
+      now: () => now,
+      setTimer: (callback) => {
+        scheduled = callback;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: vi.fn(),
+    });
+    session.appear(settings([a]));
+    await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(scheduled).not.toBeNull());
+
+    now = 20_000;
+    (scheduled as () => void)();
+    expect(onResume).toHaveBeenCalledTimes(1);
+    expect(readStatus).toHaveBeenCalledTimes(1);
+    resumed.resolve();
+
+    await vi.waitFor(() => expect(readStatus).toHaveBeenCalledTimes(2));
+  });
 });

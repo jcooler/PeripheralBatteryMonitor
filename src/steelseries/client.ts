@@ -650,9 +650,11 @@ function matchesConfiguredMetadata(
   device: SteelSeriesDevice,
   ref: DeviceRef
 ): boolean {
+  const currentName = device.display_name || device.name;
+  const currentType = device.deviceTypeName || String(device.type);
   return (
-    ref.name === (device.display_name || device.name) &&
-    ref.deviceType === (device.deviceTypeName || String(device.type))
+    ref.name === currentName &&
+    (ref.deviceType === currentType || ref.deviceType === "Device")
   );
 }
 

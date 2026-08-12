@@ -105,16 +105,52 @@ export function providerLabel(provider: ProviderId): string {
   return PROVIDER_LABELS[provider];
 }
 
+export function prepareMigratedDevices(
+  selectedDevices: readonly DeviceRef[],
+  discoveredDevices: readonly DeviceRef[]
+): { selectedDevices: DeviceRef[]; safeToPersist: boolean } {
+  const discoveredByKey = new Map(
+    discoveredDevices.map((device) => [device.key, device])
+  );
+  let safeToPersist = true;
+  const prepared = selectedDevices.map((device) => {
+    const canonical = discoveredByKey.get(device.key);
+    if (canonical) {
+      if (
+        device.provider === "steelseries" &&
+        device.deviceType === "Device" &&
+        device.name !== canonical.name
+      ) {
+        safeToPersist = false;
+        return device;
+      }
+      return canonical;
+    }
+    if (device.provider === "steelseries" && device.deviceType === "Device") {
+      safeToPersist = false;
+    }
+    return device;
+  });
+  return { selectedDevices: prepared, safeToPersist };
+}
+
 function parseSelectedDevices(values: unknown[]): DeviceRef[] {
   const result: DeviceRef[] = [];
   const seen = new Set<string>();
+  const seenPhysicalIds = new Set<string>();
   for (const value of values) {
     if (!isRecord(value) || !isProvider(value.provider)) continue;
     if (typeof value.nativeId !== "string" || !value.nativeId.trim()) continue;
     const nativeId = value.nativeId.trim();
     const key = makeDeviceKey(value.provider, nativeId);
     if (seen.has(key)) continue;
+    const physicalId =
+      typeof value.physicalId === "string" && value.physicalId.trim()
+        ? value.physicalId.trim()
+        : undefined;
+    if (physicalId && seenPhysicalIds.has(physicalId)) continue;
     seen.add(key);
+    if (physicalId) seenPhysicalIds.add(physicalId);
     result.push({
       key,
       provider: value.provider,
@@ -128,9 +164,7 @@ function parseSelectedDevices(values: unknown[]): DeviceRef[] {
         typeof value.deviceType === "string" && value.deviceType.trim()
           ? value.deviceType.trim()
           : "Device",
-      ...(typeof value.physicalId === "string" && value.physicalId.trim()
-        ? { physicalId: value.physicalId.trim() }
-        : {}),
+      ...(physicalId ? { physicalId } : {}),
     });
   }
   return result;

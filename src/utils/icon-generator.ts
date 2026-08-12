@@ -82,7 +82,7 @@ export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): s
 
   // Optional labels
   const typeLabel = topLabel
-    ? `<text x="72" y="${by - 10}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${o.deviceTypeFontSize}" font-weight="600" fill="#8b949e" letter-spacing="1">${detectType(info).toUpperCase()}</text>`
+    ? `<text x="72" y="${by - 10}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${o.deviceTypeFontSize}" font-weight="600" fill="#8b949e" letter-spacing="1">${esc(detectType(info).toUpperCase())}</text>`
     : "";
 
   const nameLabel = bottomLabel1

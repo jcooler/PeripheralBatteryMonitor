@@ -9,6 +9,7 @@ import {
   type SteelSeriesSocket,
 } from "../../src/steelseries/client";
 import type { SteelSeriesDevice } from "../../src/steelseries/types";
+import { parseBatterySettings } from "../../src/actions/settings";
 import { deferred } from "../helpers/deferred";
 
 class FakeSocket extends EventEmitter implements SteelSeriesSocket {
@@ -192,6 +193,25 @@ describe("passive SteelSeries GG client", () => {
       detail: "Waiting for passive SteelSeries battery data",
     });
     expect(requests).toHaveLength(1);
+  });
+
+  it("accepts an exact legacy ID and saved name until canonical type metadata is persisted", async () => {
+    const { client, sockets } = setup();
+    const [legacyMouse] = parseBatterySettings({
+      deviceBrand: "steelseries",
+      deviceId: 42,
+      deviceName: "Aerox 5 Wireless",
+    }).settings.selectedDevices;
+    await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, battery_status: { charging: 0, level: 63 } },
+    })));
+
+    await expect(client.readStatus(legacyMouse)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 63 },
+    });
   });
 
   it("reconnects into a fresh event generation without HTTP or application sends", async () => {

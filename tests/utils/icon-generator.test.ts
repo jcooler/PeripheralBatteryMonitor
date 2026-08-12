@@ -37,4 +37,18 @@ describe("battery status icons", () => {
     expect(svg).toContain("XInput");
     expect(svg).not.toMatch(/\d+%/);
   });
+
+  it("escapes untrusted device text before embedding it in the SVG", () => {
+    const svg = decode(generateBatteryIcon({
+      deviceId: 1,
+      deviceName: "Portable device",
+      deviceType: "</text><script>alert(1)</script>",
+      batteryLevel: 50,
+      isCharging: false,
+      isConnected: true,
+    }, { showDeviceType: true }));
+
+    expect(svg).toContain("&lt;/TEXT&gt;&lt;SCRIPT&gt;ALERT(1)&lt;/SCRIPT&gt;");
+    expect(svg).not.toContain("<script>");
+  });
 });

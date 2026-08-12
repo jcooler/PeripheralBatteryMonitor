@@ -218,19 +218,33 @@ export class ActionSession {
     if (!this.visible || !this.activeDeviceKey || this.draining) return;
     const delay = this.currentSettings.pollInterval * 1_000;
     const dueAt = this.now() + delay;
+    const scheduledGeneration = this.generation;
+    const scheduledKey = this.activeDeviceKey;
     this.pollDueAt = dueAt;
     this.pollTimer = this.setTimer(() => {
       this.pollTimer = null;
       const lateness = this.now() - dueAt;
       this.pollDueAt = null;
+      const refreshIfCurrent = (): void => {
+        if (
+          this.visible &&
+          this.generation === scheduledGeneration &&
+          this.activeDeviceKey === scheduledKey
+        ) {
+          this.requestRefresh(false);
+        }
+      };
       if (lateness > Math.max(5_000, delay / 2)) {
         try {
-          void Promise.resolve(this.onResume?.()).catch(() => undefined);
+          void Promise.resolve(this.onResume?.())
+            .catch(() => undefined)
+            .finally(refreshIfCurrent);
         } catch {
-          // Resume recovery is best effort; status refresh still proceeds.
+          refreshIfCurrent();
         }
+      } else {
+        refreshIfCurrent();
       }
-      this.requestRefresh(false);
     }, delay);
   }
 

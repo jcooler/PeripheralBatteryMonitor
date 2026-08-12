@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseBatterySettings,
+  prepareMigratedDevices,
   type PersistedBatterySettings,
 } from "../../src/actions/settings";
 
@@ -45,6 +46,39 @@ describe("battery action settings", () => {
     expect(parsed.migrated).toBe(false);
   });
 
+  it("keeps only the first ordered device for a reliable physical identity", () => {
+    const parsed = parseBatterySettings({
+      schemaVersion: 2,
+      selectedDevices: [
+        {
+          provider: "windows",
+          nativeId: "BTH-1",
+          name: "Controller through Windows",
+          deviceType: "Controller",
+          physicalId: "container:controller-1",
+        },
+        {
+          provider: "hid",
+          nativeId: "serial:controller-1",
+          name: "The same controller through HID",
+          deviceType: "Controller",
+          physicalId: "container:controller-1",
+        },
+        {
+          provider: "xinput",
+          nativeId: "slot:0",
+          name: "Session-only controller",
+          deviceType: "Controller",
+        },
+      ],
+    });
+
+    expect(parsed.settings.selectedDevices.map((device) => device.key)).toEqual([
+      "windows:BTH-1",
+      "xinput:slot%3A0",
+    ]);
+  });
+
   it("migrates only legacy identities proven by the old schema", () => {
     const steelSeries = parseBatterySettings({
       deviceBrand: "steelseries",
@@ -76,6 +110,40 @@ describe("battery action settings", () => {
       nativeId: "slot:2",
     });
     expect(steelSeries.migrated && logitech.migrated && xinput.migrated).toBe(true);
+  });
+
+  it("enriches legacy SteelSeries metadata by exact catalog key before persistence", () => {
+    const legacy = parseBatterySettings({
+      deviceBrand: "steelseries",
+      deviceId: 42,
+      deviceName: "Aerox 5 Wireless",
+    }).settings.selectedDevices;
+    const canonical = {
+      ...legacy[0],
+      name: "Aerox 5 Wireless",
+      deviceType: "Mouse",
+    };
+
+    expect(prepareMigratedDevices(legacy, [canonical])).toEqual({
+      selectedDevices: [canonical],
+      safeToPersist: true,
+    });
+    expect(
+      prepareMigratedDevices(legacy, [
+        { ...canonical, key: "steelseries:99", nativeId: "99" },
+      ])
+    ).toEqual({
+      selectedDevices: legacy,
+      safeToPersist: false,
+    });
+    expect(
+      prepareMigratedDevices(legacy, [
+        { ...canonical, name: "Different device reusing ID 42" },
+      ])
+    ).toEqual({
+      selectedDevices: legacy,
+      safeToPersist: false,
+    });
   });
 
   it("never defaults an ambiguous legacy setting to SteelSeries", () => {
