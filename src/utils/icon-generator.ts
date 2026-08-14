@@ -11,6 +11,11 @@ export interface IconOptions {
   backgroundColor?: string;
 }
 
+export interface CycleIndicator {
+  count: number;
+  activeIndex: number;
+}
+
 export interface QualitativeBatteryInfo {
   deviceName: string;
   deviceType: string;
@@ -39,7 +44,11 @@ function getBatteryColor(level: number, isCharging: boolean): string {
   return "#EF5350";
 }
 
-export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): string {
+export function generateBatteryIcon(
+  info: BatteryInfo,
+  options?: IconOptions,
+  cycleIndicator?: CycleIndicator
+): string {
   const o = opts(options);
   const level = Math.max(0, Math.min(100, info.batteryLevel));
   const color = getBatteryColor(level, info.isCharging);
@@ -114,6 +123,7 @@ export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): s
   ${pctText}
   ${nameLabel}
   ${statusLabel}
+  ${renderCycleIndicator(cycleIndicator, o.backgroundColor)}
 </svg>`;
 
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
@@ -121,7 +131,8 @@ export function generateBatteryIcon(info: BatteryInfo, options?: IconOptions): s
 
 export function generateQualitativeBatteryIcon(
   info: QualitativeBatteryInfo,
-  options?: IconOptions
+  options?: IconOptions,
+  cycleIndicator?: CycleIndicator
 ): string {
   const o = opts(options);
   const visualFill = {
@@ -171,11 +182,16 @@ export function generateQualitativeBatteryIcon(
   ${levelLabel}
   ${nameLabel}
   ${sourceLabel}
+  ${renderCycleIndicator(cycleIndicator, o.backgroundColor)}
 </svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
-export function generateErrorIcon(message: string = "No Device", bgColor?: string): string {
+export function generateErrorIcon(
+  message: string = "No Device",
+  bgColor?: string,
+  cycleIndicator?: CycleIndicator
+): string {
   const bg = validateColor(bgColor || DEFAULTS.backgroundColor);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">
   <rect width="${SIZE}" height="${SIZE}" fill="${esc(bg)}"/>
@@ -184,11 +200,15 @@ export function generateErrorIcon(message: string = "No Device", bgColor?: strin
   <line x1="46" y1="60" x2="82" y2="84" stroke="#484f58" stroke-width="3" stroke-linecap="round"/>
   <line x1="82" y1="60" x2="46" y2="84" stroke="#484f58" stroke-width="3" stroke-linecap="round"/>
   <text x="72" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#484f58">${esc(message)}</text>
+  ${renderCycleIndicator(cycleIndicator, bg)}
 </svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
-export function generateLoadingIcon(bgColor?: string): string {
+export function generateLoadingIcon(
+  bgColor?: string,
+  cycleIndicator?: CycleIndicator
+): string {
   const bg = validateColor(bgColor || DEFAULTS.backgroundColor);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">
   <rect width="${SIZE}" height="${SIZE}" fill="${esc(bg)}"/>
@@ -198,8 +218,74 @@ export function generateLoadingIcon(bgColor?: string): string {
   <circle cx="64" cy="72" r="4" fill="#8b949e" opacity="0.7"/>
   <circle cx="84" cy="72" r="4" fill="#8b949e" opacity="1"/>
   <text x="72" y="116" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#484f58">Loading...</text>
+  ${renderCycleIndicator(cycleIndicator, bg)}
 </svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
+function renderCycleIndicator(
+  indicator?: CycleIndicator,
+  backgroundColor = DEFAULTS.backgroundColor
+): string {
+  if (
+    !indicator ||
+    !Number.isInteger(indicator.count) ||
+    indicator.count <= 1 ||
+    !Number.isInteger(indicator.activeIndex) ||
+    indicator.activeIndex < 0 ||
+    indicator.activeIndex >= indicator.count
+  ) {
+    return "";
+  }
+
+  const centerSpan = 96;
+  const step = Math.min(8, centerSpan / (indicator.count - 1));
+  const radius = Math.min(2.5, step * 0.38);
+  const startX = SIZE / 2 - (step * (indicator.count - 1)) / 2;
+  const colors = cycleIndicatorColors(backgroundColor);
+  const circles = Array.from({ length: indicator.count }, (_, index) => {
+    const active = index === indicator.activeIndex;
+    return `<circle data-cycle-index="${index}" data-active="${active}" cx="${svgNumber(startX + index * step)}" cy="136" r="${svgNumber(radius)}" fill="${active ? colors.active : colors.inactive}" stroke="${colors.stroke}" stroke-width="1.25"/>`;
+  }).join("");
+
+  return `<g data-cycle-indicator="true">${circles}</g>`;
+}
+
+function cycleIndicatorColors(backgroundColor: string): {
+  active: string;
+  inactive: string;
+  stroke: string;
+} {
+  if (relativeLuminance(validateColor(backgroundColor)) > 0.45) {
+    return {
+      active: "#ffffff",
+      inactive: "#57606a",
+      stroke: "#24292f",
+    };
+  }
+  return {
+    active: "#f0f6fc",
+    inactive: "#9da7b3",
+    stroke: "#010409",
+  };
+}
+
+function relativeLuminance(color: string): number {
+  const raw = color.slice(1);
+  const rgb = raw.length === 3 || raw.length === 4
+    ? raw.slice(0, 3).split("").map((channel) => channel + channel)
+    : raw.slice(0, 6).match(/.{2}/g) ?? ["0d", "11", "17"];
+  const linear = rgb.map((channel) => {
+    const value = Number.parseInt(channel, 16) / 255;
+    return value <= 0.04045
+      ? value / 12.92
+      : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function svgNumber(value: number): string {
+  return String(Number(value.toFixed(3)));
 }
 
 function detectType(info: BatteryInfo): string {

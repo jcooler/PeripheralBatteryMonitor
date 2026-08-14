@@ -80,7 +80,9 @@ export class ActionSession {
     this.visible = true;
     this.currentSettings = parseBatterySettings(settings).settings;
     this.activeDeviceKey =
-      this.currentSettings.selectedDevices[0]?.key ?? null;
+      this.currentSettings.activeDeviceKey ??
+      this.currentSettings.selectedDevices[0]?.key ??
+      null;
     if (!this.activeDeviceKey) {
       this.safeRender({ kind: "empty", settings: this.currentSettings });
       return;

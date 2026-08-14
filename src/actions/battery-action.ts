@@ -16,6 +16,7 @@ import {
   generateErrorIcon,
   generateLoadingIcon,
   generateQualitativeBatteryIcon,
+  type CycleIndicator,
   type IconOptions,
 } from "../utils/icon-generator";
 import { BatteryRuntime } from "./battery-runtime";
@@ -33,6 +34,7 @@ import {
 interface BatteryActionSettings extends JsonObject {
   schemaVersion?: number;
   selectedDevices?: JsonObject[];
+  activeDeviceKey?: string;
   pollInterval?: number;
   showPercentage?: boolean;
   showDeviceType?: boolean;
@@ -53,6 +55,8 @@ interface ActionHandle {
   id: string;
   setImage(image: string): Promise<void>;
   setTitle(title: string): Promise<void>;
+  getSettings<T extends JsonObject>(): Promise<T>;
+  setSettings(settings: BatteryActionSettings): Promise<void>;
 }
 
 const catalog = new DeviceCatalog(createActiveProviders());
@@ -65,6 +69,7 @@ export type BatteryActionRuntime = Pick<
   | "manualRefresh"
   | "disappear"
   | "refreshDevices"
+  | "activeKey"
 >;
 
 export interface BatteryActionOptions {
@@ -162,15 +167,49 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     ev: KeyDownEvent<BatteryActionSettings>
   ): Promise<void> {
     this.runtime.keyDown(ev.action.id);
+    const activeDeviceKey = this.runtime.activeKey(ev.action.id);
+    if (!activeDeviceKey) return;
+    try {
+      await ev.action.setSettings({
+        ...ev.payload.settings,
+        activeDeviceKey,
+      });
+    } catch (error) {
+      streamDeck.logger.warn(
+        `Could not persist active device: ${errorMessage(error)}`
+      );
+    }
   }
 
   override async onDidReceiveSettings(
     ev: DidReceiveSettingsEvent<BatteryActionSettings>
   ): Promise<void> {
-    this.runtime.updateSettings(
-      ev.action.id,
-      ev.payload.settings as unknown as PersistedBatterySettings
-    );
+    const persisted =
+      ev.payload.settings as unknown as PersistedBatterySettings;
+    this.runtime.updateSettings(ev.action.id, persisted);
+
+    const activeDeviceKey = this.runtime.activeKey(ev.action.id);
+    const savedActiveDeviceKey =
+      typeof persisted.activeDeviceKey === "string"
+        ? persisted.activeDeviceKey
+        : null;
+    if (
+      activeDeviceKey === savedActiveDeviceKey ||
+      this.handles.get(ev.action.id) !== ev.action
+    ) {
+      return;
+    }
+
+    const correctedSettings = { ...ev.payload.settings };
+    if (activeDeviceKey) correctedSettings.activeDeviceKey = activeDeviceKey;
+    else delete correctedSettings.activeDeviceKey;
+    try {
+      await ev.action.setSettings(correctedSettings);
+    } catch (error) {
+      streamDeck.logger.warn(
+        `Could not reconcile active device: ${errorMessage(error)}`
+      );
+    }
   }
 
   override async onSendToPlugin(
@@ -212,9 +251,15 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     const handle = this.handles.get(contextId);
     if (!handle) return;
     const options = iconOptions(render.settings);
+    const indicator =
+      render.kind === "empty"
+        ? undefined
+        : cycleIndicator(render.settings, render.device);
 
     if (render.kind === "loading") {
-      await handle.setImage(generateLoadingIcon(render.settings.backgroundColor));
+      await handle.setImage(
+        generateLoadingIcon(render.settings.backgroundColor, indicator)
+      );
       return;
     }
     if (render.kind === "empty") {
@@ -235,7 +280,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
               ? "Not Found"
               : "Unavailable";
       await handle.setImage(
-        generateErrorIcon(message, render.settings.backgroundColor)
+        generateErrorIcon(message, render.settings.backgroundColor, indicator)
       );
       return;
     }
@@ -249,7 +294,8 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
             level: status.level.value,
             providerLabel: status.providerLabel,
           },
-          options
+          options,
+          indicator
         )
       );
       return;
@@ -264,7 +310,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       isConnected: true,
       providerLabel: status.providerLabel,
     };
-    await handle.setImage(generateBatteryIcon(info, options));
+    await handle.setImage(generateBatteryIcon(info, options, indicator));
   }
 
 }
@@ -278,6 +324,19 @@ function iconOptions(settings: NormalizedBatterySettings): IconOptions {
     deviceTypeFontSize: settings.deviceTypeFontSize,
     backgroundColor: settings.backgroundColor,
   };
+}
+
+function cycleIndicator(
+  settings: NormalizedBatterySettings,
+  device: DeviceDescriptor
+): CycleIndicator | undefined {
+  if (settings.selectedDevices.length <= 1) return undefined;
+  const activeIndex = settings.selectedDevices.findIndex(
+    (candidate) => candidate.key === device.key
+  );
+  return activeIndex < 0
+    ? undefined
+    : { count: settings.selectedDevices.length, activeIndex };
 }
 
 function discoveryMessage(result: DiscoveryResult): JsonObject {

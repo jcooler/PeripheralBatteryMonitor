@@ -112,6 +112,22 @@ describe("ordered device cycle", () => {
     session.updateSettings(settings([c, a]));
     expect(session.activeKey).toBe(c.key);
   });
+
+  it("restores the persisted active device when an action session is recreated", async () => {
+    const apex = ref("Apex");
+    const mxKeys = ref("MX Keys");
+    const persisted = settings([apex, mxKeys], {
+      activeDeviceKey: mxKeys.key,
+    });
+    const { session } = setup();
+
+    session.appear(persisted);
+    await vi.waitFor(() => expect(session.activeKey).toBe(mxKeys.key));
+    session.disappear();
+    session.appear(persisted);
+
+    expect(session.activeKey).toBe(mxKeys.key);
+  });
 });
 
 describe("refresh concurrency", () => {

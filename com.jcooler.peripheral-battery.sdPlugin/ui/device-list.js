@@ -380,7 +380,7 @@ export function renderDeviceList(container, rows, handlers) {
       if (row.initial) {
         const initial = document.createElement("span");
         initial.className = "initial-label";
-        initial.textContent = "Initial";
+        initial.textContent = "Default";
         order.append(initial);
       }
 

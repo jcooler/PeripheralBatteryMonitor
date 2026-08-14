@@ -8,6 +8,7 @@ export interface PersistedBatterySettings {
   [key: string]: unknown;
   schemaVersion?: number;
   selectedDevices?: readonly unknown[];
+  activeDeviceKey?: string;
   pollInterval?: number;
   showPercentage?: boolean;
   showDeviceType?: boolean;
@@ -24,6 +25,7 @@ export interface PersistedBatterySettings {
 
 export interface NormalizedBatterySettings {
   selectedDevices: DeviceRef[];
+  activeDeviceKey: string | null;
   pollInterval: number;
   showPercentage: boolean;
   showDeviceType: boolean;
@@ -69,6 +71,11 @@ export function parseBatterySettings(
     migrated,
     settings: {
       selectedDevices,
+      activeDeviceKey:
+        typeof raw.activeDeviceKey === "string" &&
+        selectedDevices.some((device) => device.key === raw.activeDeviceKey)
+          ? raw.activeDeviceKey
+          : null,
       pollInterval: clampNumber(raw.pollInterval, 10, 3_600, 30),
       showPercentage: raw.showPercentage !== false,
       showDeviceType: raw.showDeviceType === true,

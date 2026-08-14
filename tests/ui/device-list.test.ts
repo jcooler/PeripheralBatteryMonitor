@@ -316,7 +316,8 @@ describe("Property Inspector device-list model", () => {
       "Move Office Keyboard up",
       "Move Office Keyboard down",
     ]);
-    expect(collectText(list)).toContain("Initial");
+    expect(collectText(list)).toContain("Default");
+    expect(collectText(list)).not.toContain("Initial");
     expect(collectText(list)).toContain("XInput");
     expect(collectText(list)).toContain("Windows Bluetooth");
 
