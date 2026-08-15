@@ -41,6 +41,15 @@ const xinputController = {
   deviceType: "Controller",
 };
 
+const adapterController = {
+  key: "windows-gamepad:raw-controller-1",
+  provider: "windows-gamepad",
+  providerLabel: "untrusted label",
+  nativeId: "raw-controller-1",
+  name: "Xbox One Game Controller",
+  deviceType: "Controller",
+};
+
 describe("Property Inspector device-list model", () => {
   it("shows selected devices first in configured order and marks only the first as initial", () => {
     const rows = buildDeviceRows(
@@ -76,6 +85,41 @@ describe("Property Inspector device-list model", () => {
     });
   });
 
+  it("restores a saved gamepad only for the same exact Windows controller identity", () => {
+    const sameNameBluetooth = {
+      ...windowsKeyboard,
+      nativeId: "BTH-XBOX",
+      key: "windows:BTH-XBOX",
+      name: adapterController.name,
+      deviceType: "Controller",
+    };
+
+    const missingRows = buildDeviceRows(
+      [sameNameBluetooth],
+      [adapterController]
+    );
+    expect(missingRows[0]).toMatchObject({
+      included: true,
+      available: false,
+      device: { key: "windows-gamepad:raw-controller-1" },
+    });
+    expect(missingRows[1]).toMatchObject({
+      included: false,
+      available: true,
+      device: { key: "windows:BTH-XBOX" },
+    });
+
+    const restoredRows = buildDeviceRows(
+      [sameNameBluetooth, adapterController],
+      [adapterController]
+    );
+    expect(restoredRows[0]).toMatchObject({
+      included: true,
+      available: true,
+      device: { key: "windows-gamepad:raw-controller-1" },
+    });
+  });
+
   it("retains prefixed v1 selections as exact unavailable rows", () => {
     const legacySettings = {
       deviceBrand: "steelseries",
@@ -107,6 +151,7 @@ describe("Property Inspector device-list model", () => {
     const inputs = [
       steelSeriesMouse,
       windowsKeyboard,
+      adapterController,
       xinputController,
       { ...steelSeriesMouse, key: "logitech:mouse-1", provider: "logitech", nativeId: "mouse-1" },
       { ...steelSeriesMouse, key: "hid:pad-1", provider: "hid", nativeId: "pad-1" },
@@ -115,6 +160,7 @@ describe("Property Inspector device-list model", () => {
     expect(buildDeviceRows(inputs, []).map((row) => row.device.providerLabel)).toEqual([
       "SteelSeries GG",
       "Windows Bluetooth",
+      "Windows Gamepad",
       "XInput",
       "Logitech G Hub",
       "HID",

@@ -203,12 +203,14 @@ function providerPriority(provider: ProviderId): number {
       return 0;
     case "windows":
       return 1;
-    case "logitech":
+    case "windows-gamepad":
       return 2;
-    case "steelseries":
+    case "logitech":
       return 3;
-    case "xinput":
+    case "steelseries":
       return 4;
+    case "xinput":
+      return 5;
   }
 }
 

@@ -26,6 +26,13 @@ describe("battery action settings", () => {
           deviceType: "Mouse",
         },
         {
+          provider: "windows-gamepad",
+          nativeId: "raw-controller-1",
+          providerLabel: "ignored",
+          name: "Xbox One Game Controller",
+          deviceType: "Controller",
+        },
+        {
           provider: "windows",
           nativeId: "BTH-2",
           providerLabel: "ignored",
@@ -38,10 +45,12 @@ describe("battery action settings", () => {
     expect(parsed.settings.selectedDevices.map((device) => device.key)).toEqual([
       "windows:BTH-2",
       "steelseries:7",
+      "windows-gamepad:raw-controller-1",
     ]);
     expect(parsed.settings.selectedDevices.map((device) => device.providerLabel)).toEqual([
       "Windows Bluetooth",
       "SteelSeries GG",
+      "Windows Gamepad",
     ]);
     expect(parsed.migrated).toBe(false);
   });

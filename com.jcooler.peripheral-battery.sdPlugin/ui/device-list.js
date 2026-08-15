@@ -1,6 +1,7 @@
 const PROVIDER_LABELS = Object.freeze({
   steelseries: "SteelSeries GG",
   windows: "Windows Bluetooth",
+  "windows-gamepad": "Windows Gamepad",
   xinput: "XInput",
   logitech: "Logitech G Hub",
   hid: "HID",

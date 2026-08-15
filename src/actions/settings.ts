@@ -45,6 +45,7 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
   logitech: "Logitech G Hub",
   xinput: "XInput",
   windows: "Windows Bluetooth",
+  "windows-gamepad": "Windows Gamepad",
   hid: "HID",
 };
 

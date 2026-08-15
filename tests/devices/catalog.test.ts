@@ -62,13 +62,17 @@ describe("provider-qualified device identity", () => {
   it("does not merge different devices merely because their names match", async () => {
     const ss = provider("steelseries", [descriptor("steelseries", "1", "Rival Wireless")]);
     const windows = provider("windows", [descriptor("windows", "BTH-44", "Rival Wireless")]);
-    const catalog = new DeviceCatalog([ss, windows], { now: () => 0 });
+    const gamepad = provider("windows-gamepad", [
+      descriptor("windows-gamepad", "raw-1", "Rival Wireless"),
+    ]);
+    const catalog = new DeviceCatalog([ss, windows, gamepad], { now: () => 0 });
 
     const result = await catalog.discover();
 
     expect(result.devices.map((device) => device.key)).toEqual([
       "steelseries:1",
       "windows:BTH-44",
+      "windows-gamepad:raw-1",
     ]);
   });
 

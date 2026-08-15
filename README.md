@@ -39,7 +39,7 @@ npm run pack:dry
 
 - Run the built plugin with the affected SteelSeries and Arena hardware, keep GG open, and confirm no firmware/update warning appears during startup, refresh, polling, switching, GG restart, sleep/wake, or device reconnect.
 - Confirm a supported SteelSeries battery device receives passive events and that absent events show **Unavailable**.
-- Exercise Windows Bluetooth disconnect/reconnect, a G Hub restart, and DualSense USB/Bluetooth transitions.
+- Exercise Windows Bluetooth disconnect/reconnect, Xbox Wireless Adapter controller power-off/reconnect, a G Hub restart, and DualSense USB/Bluetooth transitions.
 - Verify device ordering, missing-device retention, per-action cycle-position persistence, the active-position dots, and narrow Property Inspector keyboard navigation on a real Stream Deck installation.
 
-Legacy XInput slot selections remain visible as unavailable. XInput is not offered for new selections because its four reusable session slots cannot identify a physical controller safely after reconnect; use a stable Windows or HID entry when one is available.
+Wireless Xbox controllers exposing the verified Microsoft `045e:0b00` Windows Gaming Input interface are offered through their exact `NonRoamableId` and direct capacity report. On the tested hardware this is the controller connected through the Xbox Wireless Adapter, although the WinRT record itself does not prove transport. Legacy XInput slot selections remain visible as unavailable; XInput itself is not offered because its four reusable slots cannot identify a physical controller safely after reconnect. A disconnected Xbox Bluetooth PnP record is not evidence that the adapter-connected controller was discovered, and it is no longer offered as a new choice.

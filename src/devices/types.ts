@@ -3,6 +3,7 @@ export type ProviderId =
   | "logitech"
   | "xinput"
   | "windows"
+  | "windows-gamepad"
   | "hid";
 
 export interface DeviceRef {

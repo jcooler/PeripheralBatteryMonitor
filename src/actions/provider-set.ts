@@ -3,6 +3,7 @@ import { HidBatteryProvider } from "../hid/client";
 import { LogitechClient } from "../logitech/client";
 import { SteelSeriesClient } from "../steelseries/client";
 import { WindowsBluetoothProvider } from "../windows/client";
+import { WindowsGamepadProvider } from "../windows/gamepad";
 
 /**
  * Providers whose persisted identity is safe for cycling.
@@ -13,6 +14,7 @@ export function createActiveProviders(): DeviceProvider[] {
   return [
     new HidBatteryProvider(),
     new WindowsBluetoothProvider(),
+    new WindowsGamepadProvider(),
     new LogitechClient(),
     new SteelSeriesClient(),
   ];

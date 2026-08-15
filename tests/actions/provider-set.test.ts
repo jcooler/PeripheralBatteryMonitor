@@ -9,6 +9,7 @@ describe("active battery providers", () => {
     expect(providers.map((provider) => provider.id)).toEqual([
       "hid",
       "windows",
+      "windows-gamepad",
       "logitech",
       "steelseries",
     ]);

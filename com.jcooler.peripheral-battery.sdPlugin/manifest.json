@@ -2,7 +2,7 @@
   "Name": "Peripheral Battery Monitor",
   "Version": "1.1.0.0",
   "Author": "jcooler",
-  "Description": "Display battery status from passive SteelSeries GG events, Windows Bluetooth, Logitech G Hub, and supported HID devices.",
+  "Description": "Display battery status from passive SteelSeries GG events, Windows Bluetooth and gamepads, Logitech G Hub, and supported HID devices.",
   "Category": "Peripheral Battery Monitor",
   "CategoryIcon": "imgs/plugin/category",
   "Icon": "imgs/plugin/icon",

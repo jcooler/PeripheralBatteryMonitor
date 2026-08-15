@@ -80,6 +80,94 @@ describe("WindowsBluetoothProvider", () => {
     );
   });
 
+  it("does not offer disconnected or indeterminate Bluetooth pairings as device choices", async () => {
+    const { provider } = createProvider(
+      JSON.stringify([
+        {
+          deviceId: "BTHLE\\DEV_STALE_XBOX\\1",
+          name: "Xbox Wireless Controller",
+          batteryLevel: 50,
+          connected: false,
+        },
+        {
+          deviceId: "BTHLE\\DEV_UNKNOWN\\1",
+          name: "Unknown Bluetooth Controller",
+          batteryLevel: 75,
+          connected: null,
+        },
+        {
+          deviceId: "BTHLE\\DEV_CONNECTED\\1",
+          name: "MX Keys Mini",
+          batteryLevel: 64,
+          connected: true,
+        },
+      ])
+    );
+
+    await expect(provider.discover()).resolves.toEqual([
+      expect.objectContaining({
+        nativeId: "BTHLE\\DEV_CONNECTED\\1",
+        name: "MX Keys Mini",
+      }),
+    ]);
+  });
+
+  it("keeps a saved identity disconnected until that exact PnP device reconnects", async () => {
+    const original = {
+      deviceId: "BTHLE\\DEV_ORIGINAL\\1",
+      name: "Xbox Wireless Controller",
+      batteryLevel: 50,
+      connected: true,
+    };
+    const sameNameAlternate = {
+      deviceId: "BTHLE\\DEV_ALTERNATE\\1",
+      name: "Xbox Wireless Controller",
+      batteryLevel: 90,
+      connected: true,
+    };
+    const execute = vi
+      .fn<PowerShellExecutor>()
+      .mockResolvedValueOnce(JSON.stringify(original))
+      .mockResolvedValueOnce(
+        JSON.stringify([
+          { ...original, connected: false },
+          sameNameAlternate,
+        ])
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify([original, sameNameAlternate])
+      );
+    const provider = new WindowsBluetoothProvider({
+      execute,
+      platform: WINDOWS,
+      now: () => 1_000,
+    });
+
+    const [saved] = await provider.discover();
+    const disconnectedChoices = await provider.discover();
+
+    expect(disconnectedChoices.map((device) => device.nativeId)).toEqual([
+      "BTHLE\\DEV_ALTERNATE\\1",
+    ]);
+    await expect(provider.readStatus(saved)).resolves.toMatchObject({
+      state: "disconnected",
+      level: { kind: "unavailable" },
+      detail: "Windows reports the Bluetooth device as disconnected",
+    });
+
+    const reconnectedChoices = await provider.discover();
+    expect(reconnectedChoices).toContainEqual(
+      expect.objectContaining({
+        key: saved.key,
+        nativeId: saved.nativeId,
+      })
+    );
+    await expect(provider.readStatus(saved)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 50 },
+    });
+  });
+
   it("reads the cached status without launching another PowerShell scan", async () => {
     const { provider, execute } = createProvider(
       JSON.stringify({
@@ -180,7 +268,7 @@ describe("WindowsBluetoothProvider", () => {
     });
   });
 
-  it("reports a discovered but disconnected device honestly", async () => {
+  it("reports a saved device retained in a disconnected snapshot honestly", async () => {
     const { provider } = createProvider(
       JSON.stringify({
         deviceId: "BTHLE\\DEV_SLEEPING\\1",
@@ -190,7 +278,15 @@ describe("WindowsBluetoothProvider", () => {
       }),
       900
     );
-    const [device] = await provider.discover();
+    await provider.discover();
+    const device: DeviceRef = {
+      key: makeDeviceKey("windows", "BTHLE\\DEV_SLEEPING\\1"),
+      provider: "windows",
+      providerLabel: "Windows Bluetooth",
+      nativeId: "BTHLE\\DEV_SLEEPING\\1",
+      name: "Bluetooth Mouse",
+      deviceType: "Mouse",
+    };
 
     await expect(provider.readStatus(device)).resolves.toMatchObject({
       state: "disconnected",
@@ -210,7 +306,15 @@ describe("WindowsBluetoothProvider", () => {
       }),
       901
     );
-    const [device] = await provider.discover();
+    await provider.discover();
+    const device: DeviceRef = {
+      key: makeDeviceKey("windows", "BTHLE\\DEV_UNKNOWN\\1"),
+      provider: "windows",
+      providerLabel: "Windows Bluetooth",
+      nativeId: "BTHLE\\DEV_UNKNOWN\\1",
+      name: "Bluetooth Pen",
+      deviceType: "Pen",
+    };
 
     await expect(provider.readStatus(device)).resolves.toMatchObject({
       state: "unavailable",

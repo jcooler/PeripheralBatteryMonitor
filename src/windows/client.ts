@@ -125,7 +125,9 @@ export class WindowsBluetoothProvider implements DeviceProvider {
       this.snapshots = nextSnapshots;
       this.discoveryCompleted = true;
       this.latestDiscoveryAt = observedAt;
-      return [...nextSnapshots.values()].map(toDescriptor);
+      return [...nextSnapshots.values()]
+        .filter((snapshot) => snapshot.connected === true)
+        .map(toDescriptor);
     } finally {
       linked.unlink();
       if (this.discoveryAbort === controller) this.discoveryAbort = undefined;
