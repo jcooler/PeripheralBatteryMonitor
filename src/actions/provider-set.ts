@@ -1,3 +1,5 @@
+import streamDeck from "@elgato/streamdeck";
+
 import type { DeviceProvider } from "../devices/types";
 import { HidBatteryProvider } from "../hid/client";
 import { LogitechClient } from "../logitech/client";
@@ -15,7 +17,12 @@ export function createActiveProviders(): DeviceProvider[] {
     new HidBatteryProvider(),
     new WindowsBluetoothProvider(),
     new WindowsGamepadProvider(),
-    new LogitechClient(),
+    new LogitechClient({
+      diagnosticSink: {
+        info: (message) => streamDeck.logger.info(message),
+        warn: (message) => streamDeck.logger.warn(message),
+      },
+    }),
     new SteelSeriesClient(),
   ];
 }

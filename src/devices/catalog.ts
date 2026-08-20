@@ -8,6 +8,7 @@ import {
   type DiscoveryResult,
   type ProviderDiscoveryError,
   type ProviderId,
+  type ProviderNotice,
 } from "./types";
 
 interface CatalogOptions {
@@ -48,13 +49,15 @@ export class DeviceCatalog {
     const settled = await Promise.all(
       [...this.providers.values()].map(async (provider) => {
         try {
+          const devices = await this.discoverProvider(
+            provider,
+            options.force === true,
+            options.signal
+          );
           return {
             provider,
-            devices: await this.discoverProvider(
-              provider,
-              options.force === true,
-              options.signal
-            ),
+            devices,
+            notices: [...(provider.discoveryNotices?.() ?? [])],
           };
         } catch (error) {
           return { provider, error };
@@ -63,6 +66,7 @@ export class DeviceCatalog {
     );
 
     const errors: ProviderDiscoveryError[] = [];
+    const notices: ProviderNotice[] = [];
     const candidates: DeviceDescriptor[] = [];
     for (const item of settled) {
       if ("error" in item) {
@@ -73,12 +77,14 @@ export class DeviceCatalog {
         });
       } else {
         candidates.push(...item.devices);
+        notices.push(...item.notices);
       }
     }
 
     return {
       devices: deduplicateByPhysicalIdentity(candidates),
       errors,
+      notices,
       refreshedAt,
     };
   }

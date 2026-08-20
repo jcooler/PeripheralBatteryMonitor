@@ -3,10 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { BatteryAction } from "../../src/actions/battery-action";
 import type { SessionRender } from "../../src/actions/action-session";
 import { BatteryRuntime } from "../../src/actions/battery-runtime";
+import { InspectorMessenger } from "../../src/actions/inspector-messenger";
 import type { DeviceCatalog } from "../../src/devices/catalog";
 import {
   makeDeviceKey,
   type BatteryStatus,
+  type DeviceDescriptor,
   type DeviceRef,
   type DiscoveryResult,
 } from "../../src/devices/types";
@@ -61,6 +63,90 @@ function actionHandle(settings: Record<string, unknown>) {
 }
 
 describe("BatteryAction Stream Deck adapter", () => {
+  it("migrates an exact Logitech session alias without persisting the transient endpoint", async () => {
+    const canonical: DeviceDescriptor = {
+      key: makeDeviceKey("logitech", "model:g502 x plus|mouse"),
+      provider: "logitech",
+      providerLabel: "Logitech G Hub",
+      nativeId: "model:g502 x plus|mouse",
+      name: "G502 X Plus",
+      deviceType: "Mouse",
+      physicalId: "logitech-model:model:g502 x plus|mouse",
+      transientNativeIds: ["session:dev00000006"],
+    };
+    const legacy = {
+      deviceBrand: "logitech",
+      logiDeviceId: "dev00000006",
+      deviceName: "[Logi] G502 X Plus",
+    };
+    const fakeRuntime = runtime(Promise.resolve({
+      devices: [canonical],
+      errors: [],
+      notices: [],
+      refreshedAt: 1,
+    }));
+    const handle = actionHandle(legacy);
+    const action = new BatteryAction({ runtime: fakeRuntime });
+
+    await action.onWillAppear({
+      action: handle,
+      payload: { settings: legacy },
+    } as never);
+
+    const persisted = vi.mocked(handle.setSettings).mock.calls[0]?.[0];
+    expect(persisted?.selectedDevices).toEqual([{
+      key: canonical.key,
+      provider: "logitech",
+      providerLabel: "Logitech G Hub",
+      nativeId: canonical.nativeId,
+      name: "G502 X Plus",
+      deviceType: "Mouse",
+      physicalId: canonical.physicalId,
+    }]);
+    expect(JSON.stringify(persisted)).not.toContain("dev00000006");
+    expect(JSON.stringify(persisted)).not.toContain("transientNativeIds");
+  });
+
+  it("serializes sanitized notices and labels partial provider success", async () => {
+    const device = steelSeriesDevice();
+    const discovery: DiscoveryResult = {
+      devices: [device],
+      errors: [{
+        provider: "windows",
+        providerLabel: "Windows Bluetooth",
+        message: "Windows Bluetooth unavailable",
+      }],
+      notices: [{
+        provider: "logitech",
+        kind: "recovered",
+        message: "G502 X Plus reconnected through G Hub",
+        deviceKey: "logitech:model%3Ag502%20x%20plus%7Cmouse",
+      }],
+      refreshedAt: 42,
+    };
+    const fakeRuntime = runtime(Promise.resolve(discovery));
+    const sent: unknown[] = [];
+    const inspector = new InspectorMessenger({
+      activeContextId: () => "context-1",
+      send: async (message) => { sent.push(message); },
+    });
+    const action = new BatteryAction({ runtime: fakeRuntime, inspector });
+
+    await action.onSendToPlugin({
+      action: actionHandle({}),
+      payload: { event: "getDevices" },
+    } as never);
+
+    expect(sent.at(-1)).toMatchObject({
+      event: "deviceList",
+      state: "partial",
+      devices: [{ key: device.key }],
+      errors: discovery.errors,
+      notices: discovery.notices,
+      refreshedAt: 42,
+    });
+  });
+
   it("enriches a prefixed v1 selection and renders through its exact action handle", async () => {
     const device = steelSeriesDevice();
     const legacy = {

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   LogitechClient,
+  type GHubDevice,
+  type LogitechDiagnosticSink,
   type LogitechSocket,
 } from "../../src/logitech/client";
 
@@ -44,7 +46,17 @@ const deviceList = [
   },
 ];
 
-function setup(reportedDevices = deviceList) {
+const activeClients = new Set<LogitechClient>();
+
+function track(client: LogitechClient): LogitechClient {
+  activeClients.add(client);
+  return client;
+}
+
+function setup(
+  reportedDevices: readonly GHubDevice[] = deviceList,
+  diagnosticSink?: LogitechDiagnosticSink
+) {
   const sockets: FakeSocket[] = [];
   const createSocket = vi.fn(() => {
     const socket = new FakeSocket();
@@ -91,16 +103,19 @@ function setup(reportedDevices = deviceList) {
     queueMicrotask(() => socket.emit("open"));
     return socket;
   });
-  const client = new LogitechClient({
+  const client = track(new LogitechClient({
     createSocket,
     now: () => 12_345,
     requestTimeoutMs: 100,
     connectTimeoutMs: 100,
-  });
+    diagnosticSink,
+  }));
   return { client, createSocket, sockets };
 }
 
 afterEach(() => {
+  for (const client of activeClients) client.destroy();
+  activeClients.clear();
   vi.useRealTimers();
 });
 
@@ -197,7 +212,6 @@ describe("Logitech G Hub provider", () => {
     reportedDevices = [
       {
         ...reportedDevices[0],
-        id: "dev-mx-keys-01",
       },
       {
         ...reportedDevices[1],
@@ -211,6 +225,23 @@ describe("Logitech G Hub provider", () => {
 
     expect(refreshedMxKeys?.nativeId).toBe(initialMxKeys?.nativeId);
     expect(refreshedG502?.nativeId).toBe(initialG502?.nativeId);
+    expect(refreshedG502?.transientNativeIds).toEqual([
+      "session:dev00000001",
+    ]);
+    expect(client.discoveryNotices()).toEqual([
+      {
+        provider: "logitech",
+        kind: "recovered",
+        message: "G502 X Plus reconnected through G Hub",
+        deviceKey: refreshedG502?.key,
+      },
+    ]);
+    expect(JSON.stringify(client.discoveryNotices())).not.toContain(
+      "dev00000006"
+    );
+    expect(JSON.stringify(client.discoveryNotices())).not.toContain(
+      "dev00000001"
+    );
     await client.readStatus(refreshedG502!);
     expect(sockets[0].sent.map((message) => message.path)).toEqual([
       "/devices/list",
@@ -310,6 +341,16 @@ describe("Logitech G Hub provider", () => {
       level: { kind: "unavailable" },
       detail: "Logitech G Hub connection closed",
     });
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Logitech device not found; refresh discovery",
+    });
+    expect(
+      sockets.flatMap((socket) => socket.sent).filter(
+        (message) => typeof message.path === "string" && message.path.startsWith("/battery/")
+      )
+    ).toHaveLength(2);
   });
 
   it("refreshes exact endpoint mappings once after a socket reconnect", async () => {
@@ -350,6 +391,171 @@ describe("Logitech G Hub provider", () => {
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(sockets).toHaveLength(2);
+  });
+
+  it("ignores a stale discovery response from the socket generation that was lost", async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setup();
+    await client.discover();
+    const oldSocket = sockets[0];
+    oldSocket.responder = null;
+    const staleDiscovery = client.discover();
+    await vi.waitFor(() =>
+      expect(oldSocket.sent.filter((message) => message.path === "/devices/list")).toHaveLength(2)
+    );
+    const staleMessage = oldSocket.sent.at(-1)!;
+
+    oldSocket.emit("close");
+    await expect(staleDiscovery).rejects.toThrow("connection closed");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(sockets[1].sent.some((message) => message.path === "/devices/list")).toBe(true)
+    );
+    oldSocket.emit("message", Buffer.from(JSON.stringify({
+      msgId: staleMessage.msgId,
+      payload: {
+        deviceInfos: [{
+          id: "dev00000099",
+          extendedDisplayName: "Stale Mouse",
+          deviceType: "mouse",
+          capabilities: { hasBatteryStatus: true },
+        }],
+      },
+    })));
+
+    const recovered = await client.discover();
+    expect(recovered.map((device) => device.name)).toEqual([
+      "G Pro Wireless",
+      "G915",
+    ]);
+  });
+
+  it("keeps endpoints empty after reconnect discovery fails and retries discovery while open", async () => {
+    vi.useFakeTimers();
+    let discoveryAttempt = 0;
+    const sockets: FakeSocket[] = [];
+    const currentDevices: GHubDevice[] = [{
+      id: "dev00000041",
+      extendedDisplayName: "G502 X Plus",
+      deviceType: "mouse",
+      capabilities: { hasBatteryStatus: true },
+    }];
+    const client = track(new LogitechClient({
+      createSocket: () => {
+        const socket = new FakeSocket();
+        socket.responder = (message) => {
+          if (message.path === "/devices/list") {
+            discoveryAttempt += 1;
+            const response = discoveryAttempt === 2
+              ? { msgId: message.msgId, error: "temporary G Hub failure" }
+              : { msgId: message.msgId, payload: { deviceInfos: currentDevices } };
+            queueMicrotask(() =>
+              socket.emit("message", Buffer.from(JSON.stringify(response)))
+            );
+          } else if (message.path === "/battery/dev00000042/state") {
+            queueMicrotask(() => socket.emit("message", Buffer.from(JSON.stringify({
+              msgId: message.msgId,
+              payload: { percentage: 61, charging: false },
+            }))));
+          }
+        };
+        sockets.push(socket);
+        queueMicrotask(() => socket.emit("open"));
+        return socket;
+      },
+      requestTimeoutMs: 100,
+      connectTimeoutMs: 100,
+    }));
+    const [persistent] = await client.discover();
+
+    currentDevices[0] = { ...currentDevices[0], id: "dev00000042" };
+    sockets[0].emit("close");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(discoveryAttempt).toBe(2));
+    await expect(client.readStatus(persistent)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Logitech device not found; refresh discovery",
+    });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(discoveryAttempt).toBe(3));
+    await expect(client.readStatus(persistent)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 61 },
+    });
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("reports ambiguous model discovery without exposing endpoint diagnostics", async () => {
+    const messages: string[] = [];
+    const diagnosticSink: LogitechDiagnosticSink = {
+      info: (message) => messages.push(message),
+      warn: (message) => messages.push(message),
+    };
+    const { client } = setup([
+      {
+        id: "dev00000051",
+        extendedDisplayName: "G502 X Plus",
+        deviceType: "mouse",
+        capabilities: { hasBatteryStatus: true },
+      },
+      {
+        id: "dev00000052",
+        extendedDisplayName: "G502 X Plus",
+        deviceType: "mouse",
+        capabilities: { hasBatteryStatus: true },
+      },
+    ], diagnosticSink);
+
+    await expect(client.discover()).resolves.toEqual([]);
+    const notices = client.discoveryNotices();
+    expect(Object.isFrozen(notices)).toBe(true);
+    expect(notices).toEqual([{
+      provider: "logitech",
+      kind: "ambiguous",
+      message: "Two Logitech devices share the same model name; neither was selected automatically",
+    }]);
+    expect(messages.join("\n")).toContain("Logitech G Hub");
+    expect(messages.join("\n")).toContain("Two Logitech devices share the same model name");
+    expect(messages.join("\n")).not.toMatch(/dev0000005[12]|serial|hid\\|deviceInfos|\{.*\}|\n\s+at /i);
+  });
+
+  it("logs a sanitized failed-read reason with the model name", async () => {
+    const warnings: string[] = [];
+    const { client, sockets } = setup([{
+      id: "dev00000073",
+      serialNumber: "SERIAL-SECRET-73",
+      extendedDisplayName: "G502 X Plus",
+      deviceType: "mouse",
+      capabilities: { hasBatteryStatus: true },
+    }], {
+      info: () => undefined,
+      warn: (message) => warnings.push(message),
+    });
+    const [mouse] = await client.discover();
+    sockets[0].responder = (message) => queueMicrotask(() =>
+      sockets[0].emit("message", Buffer.from(JSON.stringify({
+        msgId: message.msgId,
+        error: {
+          endpoint: "dev00000073",
+          serial: "SERIAL-SECRET-73",
+          hidPath: "HID\\VID_046D&PID_C539",
+          payload: { verb: "GET", path: "/battery/dev00000073/state" },
+          stack: "Error: private\n    at secret.ts:1:1",
+        },
+      })))
+    );
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Logitech G Hub request failed",
+    });
+    expect(warnings.join("\n")).toContain("G502 X Plus");
+    expect(warnings.join("\n")).toContain("request failed");
+    expect(warnings.join("\n")).not.toMatch(
+      /SERIAL-SECRET-73|dev00000073|HID\\|battery\/|\{.*\}|\n\s+at /i
+    );
   });
 
   it("closes and reconnects a socket whose request times out", async () => {

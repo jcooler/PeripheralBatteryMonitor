@@ -17,7 +17,17 @@ export interface DeviceRef {
   physicalId?: string;
 }
 
-export interface DeviceDescriptor extends DeviceRef {}
+export interface ProviderNotice {
+  provider: ProviderId;
+  kind: "ambiguous" | "recovered";
+  message: string;
+  deviceKey?: string;
+}
+
+export interface DeviceDescriptor extends DeviceRef {
+  /** Runtime-only aliases used for exact migration; never persisted or sent to the inspector. */
+  transientNativeIds?: readonly string[];
+}
 
 export type BatteryLevel =
   | { kind: "percentage"; value: number }
@@ -41,6 +51,7 @@ export interface DeviceProvider {
   discover(signal?: AbortSignal): Promise<DeviceDescriptor[]>;
   readStatus(ref: DeviceRef, signal?: AbortSignal): Promise<BatteryStatus>;
   invalidateDiscovery?(reason?: string): void;
+  discoveryNotices?(): readonly ProviderNotice[];
 }
 
 export interface ProviderDiscoveryError {
@@ -52,6 +63,7 @@ export interface ProviderDiscoveryError {
 export interface DiscoveryResult {
   devices: DeviceDescriptor[];
   errors: ProviderDiscoveryError[];
+  notices?: ProviderNotice[];
   refreshedAt: number;
 }
 

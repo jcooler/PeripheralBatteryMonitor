@@ -7,6 +7,7 @@ import {
   type DeviceDescriptor,
   type DeviceProvider,
   type DeviceRef,
+  type ProviderNotice,
 } from "../../src/devices/types";
 import { deferred } from "../helpers/deferred";
 
@@ -93,6 +94,40 @@ describe("provider-qualified device identity", () => {
 });
 
 describe("discovery cache", () => {
+  it("returns a stable empty notice list when providers report no notices", async () => {
+    const ss = provider("steelseries", [descriptor("steelseries", "1", "Aerox")]);
+    const catalog = new DeviceCatalog([ss], { now: () => 0 });
+
+    await expect(catalog.discover()).resolves.toMatchObject({ notices: [] });
+  });
+
+  it("captures provider notices as soon as that provider discovery resolves", async () => {
+    const recovered: ProviderNotice = {
+      provider: "logitech",
+      kind: "recovered",
+      message: "G502 X Plus reconnected through G Hub",
+      deviceKey: "logitech:model%3Ag502%20x%20plus%7Cmouse",
+    };
+    let currentNotices: readonly ProviderNotice[] = [recovered];
+    const logitech = provider("logitech", [
+      descriptor("logitech", "model:g502 x plus|mouse", "G502 X Plus"),
+    ]);
+    logitech.discoveryNotices = vi.fn(() => currentNotices);
+    const pendingWindows = deferred<DeviceDescriptor[]>();
+    const windows = provider("windows", []);
+    windows.discover.mockImplementation(() => pendingWindows.promise);
+    const catalog = new DeviceCatalog([logitech, windows], { now: () => 0 });
+
+    const discovery = catalog.discover();
+    await vi.waitFor(() =>
+      expect(logitech.discoveryNotices).toHaveBeenCalledTimes(1)
+    );
+    currentNotices = [];
+    pendingWindows.resolve([]);
+
+    await expect(discovery).resolves.toMatchObject({ notices: [recovered] });
+  });
+
   it("reuses a provider snapshot until TTL expiry and refreshes when forced", async () => {
     let now = 10_000;
     const ss = provider("steelseries", [descriptor("steelseries", "1", "Aerox")]);

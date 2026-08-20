@@ -128,13 +128,28 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       );
       if (!latestParsed.migrated) return;
       const prepared = prepareMigratedDevices(
-        latestParsed.settings.selectedDevices,
+        resolveTransientMigrationAliases(
+          latestParsed.settings.selectedDevices,
+          discovery.devices
+        ),
         discovery.devices
       );
       if (this.handles.get(ev.action.id) !== ev.action) return;
       if (!prepared.safeToPersist) {
         streamDeck.logger.warn(
           "Legacy SteelSeries settings remain unmodified until the exact GG device can be verified"
+        );
+        return;
+      }
+      if (
+        prepared.selectedDevices.some(
+          (device) =>
+            device.provider === "logitech" &&
+            device.nativeId.startsWith("session:")
+        )
+      ) {
+        streamDeck.logger.warn(
+          "Legacy Logitech settings remain unmodified until the exact G Hub device can be verified"
         );
         return;
       }
@@ -146,6 +161,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
           (device) => toPersistedDevice(device) as JsonObject
         ),
       } satisfies BatteryActionSettings;
+      delete migrated.logiDeviceId;
       this.runtime.updateSettings(ev.action.id, migrated);
       this.runtime.manualRefresh(ev.action.id);
       try {
@@ -341,8 +357,10 @@ function cycleIndicator(
 
 function discoveryMessage(result: DiscoveryResult): JsonObject {
   const state =
-    result.devices.length > 0
-      ? "success"
+    result.devices.length > 0 && result.errors.length > 0
+      ? "partial"
+      : result.devices.length > 0
+        ? "success"
       : result.errors.length > 0
         ? "error"
         : "empty";
@@ -352,13 +370,30 @@ function discoveryMessage(result: DiscoveryResult): JsonObject {
     message:
       state === "success"
         ? `${result.devices.length} device${result.devices.length === 1 ? "" : "s"} found`
+        : state === "partial"
+          ? `${result.devices.length} device${result.devices.length === 1 ? "" : "s"} found; some providers failed`
         : state === "empty"
           ? "No battery devices found"
           : "Device discovery failed",
     devices: result.devices.map(toInspectorDevice),
     errors: result.errors.map((error) => ({ ...error })),
+    notices: (result.notices ?? []).map((notice) => ({ ...notice })),
     refreshedAt: result.refreshedAt,
   };
+}
+
+function resolveTransientMigrationAliases(
+  selectedDevices: readonly DeviceDescriptor[],
+  discoveredDevices: readonly DeviceDescriptor[]
+): DeviceDescriptor[] {
+  return selectedDevices.map((selected) => {
+    const matches = discoveredDevices.filter(
+      (discovered) =>
+        discovered.provider === selected.provider &&
+        discovered.transientNativeIds?.includes(selected.nativeId)
+    );
+    return matches.length === 1 ? matches[0] : selected;
+  });
 }
 
 function toInspectorDevice(device: DeviceDescriptor): JsonObject {
