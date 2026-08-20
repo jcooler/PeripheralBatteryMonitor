@@ -34,6 +34,7 @@ export function identifyLogitechDevices(
   for (const device of validDevices) {
     if (serialIdentity(device)) continue;
     const fingerprint = modelFingerprint(device);
+    if (!fingerprint) continue;
     modelFingerprints.set(device, fingerprint);
     modelCounts.set(fingerprint, (modelCounts.get(fingerprint) ?? 0) + 1);
   }
@@ -51,7 +52,8 @@ export function identifyLogitechDevices(
       continue;
     }
 
-    const fingerprint = modelFingerprints.get(device)!;
+    const fingerprint = modelFingerprints.get(device);
+    if (!fingerprint) continue;
     if (modelCounts.get(fingerprint) !== 1) continue;
     candidates.push({
       device,
@@ -90,10 +92,10 @@ function serialIdentity(device: GHubDevice): string | null {
   return null;
 }
 
-function modelFingerprint(device: GHubDevice): string {
-  const name = normalizeIdentityText(
-    device.extendedDisplayName?.trim() || "Logitech device"
-  );
+function modelFingerprint(device: GHubDevice): string | null {
+  const displayName = device.extendedDisplayName?.trim();
+  if (!displayName) return null;
+  const name = normalizeIdentityText(displayName);
   const type = normalizeIdentityText(mapLogitechDeviceType(device.deviceType));
   return `model:${name}|${type}`;
 }

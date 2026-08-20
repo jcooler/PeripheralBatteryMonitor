@@ -44,7 +44,7 @@ const deviceList = [
   },
 ];
 
-function setup() {
+function setup(reportedDevices = deviceList) {
   const sockets: FakeSocket[] = [];
   const createSocket = vi.fn(() => {
     const socket = new FakeSocket();
@@ -56,7 +56,7 @@ function setup() {
             Buffer.from(
               JSON.stringify({
                 msgId: message.msgId,
-                payload: { deviceInfos: deviceList },
+                payload: { deviceInfos: reportedDevices },
               })
             )
           )
@@ -125,6 +125,22 @@ describe("Logitech G Hub provider", () => {
         physicalId: "logitech-model:model:g915|keyboard",
       }),
     ]);
+    expect(sockets[0].sent.map((message) => message.path)).toEqual([
+      "/devices/list",
+    ]);
+  });
+
+  it("does not surface an unnamed serial-less endpoint as a selectable Logitech device", async () => {
+    const { client, sockets } = setup([
+      {
+        id: "dev-unnamed",
+        extendedDisplayName: "   ",
+        deviceType: "mouse",
+        capabilities: { hasBatteryStatus: true },
+      },
+    ]);
+
+    await expect(client.discover()).resolves.toEqual([]);
     expect(sockets[0].sent.map((message) => message.path)).toEqual([
       "/devices/list",
     ]);

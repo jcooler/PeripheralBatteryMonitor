@@ -57,6 +57,17 @@ describe("Logitech persistent identities", () => {
     });
   });
 
+  it("omits a serial-less endpoint without a usable display name", () => {
+    const result = identifyLogitechDevices([
+      device({ extendedDisplayName: "   ", deviceType: "mouse" }),
+    ]);
+
+    expect(result).toEqual({
+      candidates: [],
+      ambiguousModelFingerprints: [],
+    });
+  });
+
   it("omits two identical serial-less models and marks their fingerprint ambiguous", () => {
     const result = identifyLogitechDevices([
       device({ id: "dev00000001" }),
