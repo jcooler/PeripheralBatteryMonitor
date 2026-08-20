@@ -1,0 +1,109 @@
+{
+  "action": "com.jcooler.peripheral-battery.monitor",
+  "context": "qa-property-inspector-context",
+  "settings": {
+    "schemaVersion": 2,
+    "selectedDevices": [
+      {
+        "key": "logitech:serial%3AG502X-PLUS-001",
+        "provider": "logitech",
+        "providerLabel": "Logitech G Hub",
+        "nativeId": "serial:G502X-PLUS-001",
+        "name": "G502 X Plus",
+        "deviceType": "Mouse"
+      },
+      {
+        "key": "logitech:model%3A046d%3Ab35b%3Amx-keys",
+        "provider": "logitech",
+        "providerLabel": "Logitech G Hub",
+        "nativeId": "model:046d:b35b:mx-keys",
+        "name": "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
+        "deviceType": "Keyboard"
+      },
+      {
+        "key": "steelseries:404",
+        "provider": "steelseries",
+        "providerLabel": "SteelSeries GG",
+        "nativeId": "404",
+        "name": "Saved Aerox <img src=x onerror=globalThis.fixturePwned=true>",
+        "deviceType": "Mouse"
+      }
+    ],
+    "pollInterval": 30,
+    "showPercentage": true,
+    "showDeviceType": true,
+    "showDeviceName": true,
+    "showStatusText": true,
+    "deviceTypeFontSize": 13,
+    "backgroundColor": "#0d1117"
+  },
+  "discovery": {
+    "event": "deviceList",
+    "state": "partial",
+    "message": "3 devices found; Logitech G Hub retrying <script>globalThis.fixturePwned=true</script>",
+    "devices": [
+      {
+        "key": "logitech:serial%3AG502X-PLUS-001",
+        "provider": "logitech",
+        "providerLabel": "Logitech G Hub",
+        "nativeId": "serial:G502X-PLUS-001",
+        "name": "G502 X Plus",
+        "deviceType": "Mouse"
+      },
+      {
+        "key": "logitech:model%3A046d%3Ab35b%3Amx-keys",
+        "provider": "logitech",
+        "providerLabel": "Logitech G Hub",
+        "nativeId": "model:046d:b35b:mx-keys",
+        "name": "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
+        "deviceType": "Keyboard"
+      },
+      {
+        "key": "windows:BTHENUM%5CDEV_001122334455",
+        "provider": "windows",
+        "providerLabel": "Windows Bluetooth",
+        "nativeId": "BTHENUM\\DEV_001122334455",
+        "name": "Unselected <svg onload=globalThis.fixturePwned=true> Headset With A Very Long Name",
+        "deviceType": "Headset"
+      }
+    ],
+    "notices": [
+      {
+        "provider": "logitech",
+        "kind": "recovered",
+        "message": "G502 X Plus recovered <img src=x onerror=globalThis.fixturePwned=true>"
+      },
+      {
+        "provider": "logitech",
+        "kind": "partial",
+        "message": "One ambiguous identical model was omitted"
+      }
+    ]
+  },
+  "runtime": {
+    "event": "deviceRuntimeStatus",
+    "currentDeviceKey": "logitech:serial%3AG502X-PLUS-001",
+    "statuses": [
+      {
+        "deviceKey": "logitech:serial%3AG502X-PLUS-001",
+        "state": "connected",
+        "batteryText": "72%"
+      },
+      {
+        "deviceKey": "logitech:model%3A046d%3Ab35b%3Amx-keys",
+        "state": "disconnected",
+        "batteryText": "Disconnected"
+      },
+      {
+        "deviceKey": "steelseries:404",
+        "state": "unavailable",
+        "batteryText": "Unavailable"
+      }
+    ]
+  },
+  "fullError": {
+    "event": "deviceList",
+    "state": "error",
+    "message": "Discovery failed <img src=x onerror=globalThis.fixturePwned=true>"
+  }
+}
