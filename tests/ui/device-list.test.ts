@@ -9,6 +9,7 @@ import {
   displaySettingsPatch,
   mergeSettings,
   moveSelectedDevice,
+  reorderSelectedDevice,
   renderDeviceList,
   selectedDevicesFromSettings,
   setDeviceIncluded,
@@ -250,19 +251,61 @@ describe("Property Inspector device-list model", () => {
     ]);
   });
 
-  it("moves one selected device one position without disturbing the rest", () => {
+  it("moves selected devices to a requested valid cycle position without disturbing the rest", () => {
     const selected = [windowsKeyboard, steelSeriesMouse, xinputController];
 
-    expect(moveSelectedDevice(selected, "xinput:slot%3A0", "up").map((device) => device.key)).toEqual([
-      "windows:BTH-2",
-      "xinput:slot%3A0",
-      "steelseries:7",
-    ]);
-    expect(moveSelectedDevice(selected, "windows:BTH-2", "up").map((device) => device.key)).toEqual([
-      "windows:BTH-2",
+    expect(reorderSelectedDevice(selected, "windows:BTH-2", 2).map((device) => device.key)).toEqual([
       "steelseries:7",
       "xinput:slot%3A0",
+      "windows:BTH-2",
     ]);
+    expect(reorderSelectedDevice(selected, "steelseries:7", 0).map((device) => device.key)).toEqual([
+      "steelseries:7",
+      "windows:BTH-2",
+      "xinput:slot%3A0",
+    ]);
+    expect(reorderSelectedDevice(selected, "xinput:slot%3A0", 0).map((device) => device.key)).toEqual([
+      "xinput:slot%3A0",
+      "windows:BTH-2",
+      "steelseries:7",
+    ]);
+  });
+
+  it("ignores invalid reorder commands and keeps discovery-only rows separate", () => {
+    const selected = [windowsKeyboard, steelSeriesMouse];
+    const invalidKey = reorderSelectedDevice(selected, "missing", 0);
+    const invalidIndex = reorderSelectedDevice(selected, "windows:BTH-2", 4);
+
+    expect(invalidKey.map((device) => device.key)).toEqual([
+      "windows:BTH-2",
+      "steelseries:7",
+    ]);
+    expect(invalidIndex.map((device) => device.key)).toEqual([
+      "windows:BTH-2",
+      "steelseries:7",
+    ]);
+    expect(buildDeviceRows([windowsKeyboard, steelSeriesMouse, xinputController], invalidIndex).map((row) => ({
+      key: row.device.key,
+      included: row.included,
+    }))).toEqual([
+      { key: "windows:BTH-2", included: true },
+      { key: "steelseries:7", included: true },
+      { key: "xinput:slot%3A0", included: false },
+    ]);
+  });
+
+  it("adapts valid Alt-arrow directions through the same index reorder model", () => {
+    const selected = [windowsKeyboard, steelSeriesMouse, xinputController];
+
+    expect(moveSelectedDevice(selected, "steelseries:7", "up")).toEqual(
+      reorderSelectedDevice(selected, "steelseries:7", 0)
+    );
+    expect(moveSelectedDevice(selected, "steelseries:7", "down")).toEqual(
+      reorderSelectedDevice(selected, "steelseries:7", 2)
+    );
+    expect(moveSelectedDevice(selected, "steelseries:7", "sideways").map((device) => device.key)).toEqual(
+      ["windows:BTH-2", "steelseries:7", "xinput:slot%3A0"]
+    );
   });
 
   it("preserves the ordered device list when a display option changes", () => {
@@ -335,11 +378,11 @@ describe("Property Inspector device-list model", () => {
     expect(displaySettingsPatch("unknown", "value", false)).toEqual({});
   });
 
-  it("renders one accessible inclusion control per device with ordered controls for selected devices", () => {
+  it("renders numbered selected rows with a single drag grip and unselected inclusion checkboxes", () => {
     const document = new FakeDocument();
     const list = document.createElement("ol");
     const included: Array<[string, boolean]> = [];
-    const moved: Array<[string, string]> = [];
+    const reordered: Array<[string, number]> = [];
     const rows = buildDeviceRows(
       [windowsKeyboard, steelSeriesMouse, xinputController],
       [xinputController, windowsKeyboard]
@@ -347,32 +390,95 @@ describe("Property Inspector device-list model", () => {
 
     renderDeviceList(list, rows, {
       onIncluded: (device, checked) => included.push([device.key, checked]),
-      onMove: (key, direction) => moved.push([key, direction]),
+      onReorder: (key, targetIndex) => reordered.push([key, targetIndex]),
     });
 
-    expect(findAll(list, "input")).toHaveLength(3);
+    expect(findAll(list, "input")).toHaveLength(1);
     expect(findAll(list, "input").map((input) => input.attributes.get("aria-label"))).toEqual([
-      "Include Xbox Wireless Controller in cycle",
-      "Include Office Keyboard in cycle",
       "Include Aerox 5 Wireless in cycle",
     ]);
-    expect(findAll(list, "button").map((button) => button.attributes.get("aria-label"))).toEqual([
-      "Move Xbox Wireless Controller up",
-      "Move Xbox Wireless Controller down",
-      "Move Office Keyboard up",
-      "Move Office Keyboard down",
+    expect(findByClass(list, "cycle-position").map((position) => position.textContent)).toEqual(["1", "2"]);
+    expect(findByClass(list, "drag-grip")).toHaveLength(2);
+    expect(findByClass(list, "order-button")).toHaveLength(0);
+    expect(findByClass(list, "device-row-selected").map((row) => row.attributes.get("tabindex"))).toEqual(["0", "0"]);
+    expect(findByClass(list, "drag-grip").map((grip) => grip.attributes.get("aria-label"))).toEqual([
+      "Drag Xbox Wireless Controller to reorder",
+      "Drag Office Keyboard to reorder",
     ]);
-    expect(collectText(list)).toContain("Default");
-    expect(collectText(list)).not.toContain("Initial");
+    expect(findByClass(list, "device-row-selected").map((row) => row.attributes.get("aria-label"))).toEqual([
+      "Xbox Wireless Controller, position 1 of 2. Use Alt+Arrow keys to reorder.",
+      "Office Keyboard, position 2 of 2. Use Alt+Arrow keys to reorder.",
+    ]);
     expect(collectText(list)).toContain("XInput");
     expect(collectText(list)).toContain("Windows Bluetooth");
 
     const inputs = findAll(list, "input");
-    inputs[2].checked = true;
-    inputs[2].dispatch("change");
-    findAll(list, "button")[1].dispatch("click");
+    inputs[0].checked = true;
+    inputs[0].dispatch("change");
     expect(included).toEqual([["steelseries:7", true]]);
-    expect(moved).toEqual([["xinput:slot%3A0", "down"]]);
+    expect(reordered).toEqual([]);
+  });
+
+  it("reorders selected rows through drag targets and never makes an unselected row draggable", () => {
+    const document = new FakeDocument();
+    const list = document.createElement("ol");
+    const reordered: Array<[string, number]> = [];
+    const rows = buildDeviceRows(
+      [windowsKeyboard, steelSeriesMouse, xinputController],
+      [xinputController, windowsKeyboard]
+    );
+
+    renderDeviceList(list, rows, {
+      onIncluded() {},
+      onReorder: (key, targetIndex) => reordered.push([key, targetIndex]),
+    });
+
+    const grips = findByClass(list, "drag-grip");
+    const selectedRows = findByClass(list, "device-row-selected");
+    const unselectedRow = findByClass(list, "device-row").at(-1)!;
+    const dragOver = new FakeEvent();
+
+    expect(grips[0].attributes.get("aria-grabbed")).toBe("false");
+    grips[0].dispatch("dragstart");
+    expect(grips[0].attributes.get("aria-grabbed")).toBe("true");
+    selectedRows[1].dispatch("dragover", dragOver);
+    expect(dragOver.defaultPrevented).toBe(true);
+    selectedRows[1].dispatch("drop");
+    grips[0].dispatch("dragend");
+
+    expect(reordered).toEqual([["xinput:slot%3A0", 1]]);
+    expect(grips[0].attributes.get("aria-grabbed")).toBe("false");
+    expect(unselectedRow.attributes.get("draggable")).toBeUndefined();
+    expect(unselectedRow.listeners.get("dragover")).toBeUndefined();
+  });
+
+  it("handles only valid Alt-arrow reorder commands on the selected row keyboard surface", () => {
+    const document = new FakeDocument();
+    const list = document.createElement("ol");
+    const reordered: Array<[string, number]> = [];
+    const rows = buildDeviceRows(
+      [windowsKeyboard, steelSeriesMouse],
+      [windowsKeyboard, steelSeriesMouse]
+    );
+
+    renderDeviceList(list, rows, {
+      onIncluded() {},
+      onReorder: (key, targetIndex) => reordered.push([key, targetIndex]),
+    });
+
+    const selectedRows = findByClass(list, "device-row-selected");
+    const firstUp = new FakeEvent({ altKey: true, key: "ArrowUp" });
+    const firstDown = new FakeEvent({ altKey: true, key: "ArrowDown" });
+    const plainDown = new FakeEvent({ key: "ArrowDown" });
+
+    selectedRows[0].dispatch("keydown", firstUp);
+    selectedRows[0].dispatch("keydown", firstDown);
+    selectedRows[1].dispatch("keydown", plainDown);
+
+    expect(firstUp.defaultPrevented).toBe(false);
+    expect(firstDown.defaultPrevented).toBe(true);
+    expect(plainDown.defaultPrevented).toBe(false);
+    expect(reordered).toEqual([["windows:BTH-2", 1]]);
   });
 
   it("renders untrusted device names as text and labels configured missing devices unavailable", () => {
@@ -385,7 +491,7 @@ describe("Property Inspector device-list model", () => {
 
     renderDeviceList(list, buildDeviceRows([], [malicious]), {
       onIncluded() {},
-      onMove() {},
+      onReorder() {},
     });
 
     expect(findAll(list, "img")).toHaveLength(0);
@@ -432,11 +538,12 @@ describe("Property Inspector device-list model", () => {
     ]);
   });
 
-  it("persists inclusion, ordering, and display edits without losing the selected list", () => {
+  it("persists inclusion, reordering, and display edits without losing the selected list", () => {
     const sent: any[] = [];
+    const announcements: string[] = [];
     const controller = createInspectorController({
       send: (message) => sent.push(message),
-      view: { applySettings() {}, renderRows() {}, showStatus() {} },
+      view: { applySettings() {}, renderRows() {}, showStatus() {}, announce: (text) => announcements.push(text) },
     });
     controller.open({
       action: "com.jcooler.peripheral-battery.monitor",
@@ -446,7 +553,7 @@ describe("Property Inspector device-list model", () => {
     sent.length = 0;
 
     controller.include(steelSeriesMouse, true);
-    controller.move("steelseries:7", "up");
+    controller.reorder("steelseries:7", 0);
     controller.changeSettings({ showDeviceName: true });
 
     expect(sent).toHaveLength(3);
@@ -466,6 +573,10 @@ describe("Property Inspector device-list model", () => {
       ],
     });
     expect(sent.every((message) => message.action && message.context && message.event === "setSettings")).toBe(true);
+    expect(announcements).toEqual([
+      "Moved Aerox 5 Wireless to position 1 of 2",
+      "",
+    ]);
   });
 
   it("preserves a legacy unavailable selection when including another device", () => {
@@ -540,7 +651,7 @@ class FakeElement {
   readonly ownerDocument: FakeDocument;
   readonly children: FakeElement[] = [];
   readonly attributes = new Map<string, string>();
-  readonly listeners = new Map<string, Array<() => void>>();
+  readonly listeners = new Map<string, Array<(event: FakeEvent) => void>>();
   textContent = "";
   className = "";
   id = "";
@@ -569,20 +680,41 @@ class FakeElement {
     this.attributes.set(name, value);
   }
 
-  addEventListener(name: string, listener: () => void): void {
+  addEventListener(name: string, listener: (event: FakeEvent) => void): void {
     const listeners = this.listeners.get(name) ?? [];
     listeners.push(listener);
     this.listeners.set(name, listeners);
   }
 
-  dispatch(name: string): void {
-    for (const listener of this.listeners.get(name) ?? []) listener();
+  dispatch(name: string, event = new FakeEvent()): void {
+    for (const listener of this.listeners.get(name) ?? []) listener(event);
+  }
+}
+
+class FakeEvent {
+  readonly altKey: boolean;
+  readonly key: string;
+  defaultPrevented = false;
+
+  constructor({ altKey = false, key = "" }: { altKey?: boolean; key?: string } = {}) {
+    this.altKey = altKey;
+    this.key = key;
+  }
+
+  preventDefault(): void {
+    this.defaultPrevented = true;
   }
 }
 
 function findAll(root: FakeElement, tagName: string): FakeElement[] {
   const found = root.tagName === tagName ? [root] : [];
   for (const child of root.children) found.push(...findAll(child, tagName));
+  return found;
+}
+
+function findByClass(root: FakeElement, className: string): FakeElement[] {
+  const found = root.className.split(/\s+/).includes(className) ? [root] : [];
+  for (const child of root.children) found.push(...findByClass(child, className));
   return found;
 }
 

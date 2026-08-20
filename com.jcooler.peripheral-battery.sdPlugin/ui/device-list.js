@@ -86,21 +86,33 @@ export function setDeviceIncluded(selectedDevices, candidate, included) {
   return included ? [...withoutCandidate, device] : withoutCandidate;
 }
 
+export function reorderSelectedDevice(selectedDevices, key, targetIndex) {
+  const selected = uniqueDevices(selectedDevices);
+  const currentIndex = selected.findIndex((device) => device.key === key);
+  if (
+    currentIndex < 0 ||
+    !Number.isInteger(targetIndex) ||
+    targetIndex < 0 ||
+    targetIndex >= selected.length
+  ) {
+    return selected;
+  }
+
+  const reordered = [...selected];
+  const [device] = reordered.splice(currentIndex, 1);
+  reordered.splice(targetIndex, 0, device);
+  return reordered;
+}
+
+// Directional movement remains only as the keyboard adapter.
 export function moveSelectedDevice(selectedDevices, key, direction) {
   const selected = uniqueDevices(selectedDevices);
   const currentIndex = selected.findIndex((device) => device.key === key);
-  if (currentIndex < 0) return selected;
-
-  const offset = direction === "up" ? -1 : direction === "down" ? 1 : 0;
-  const nextIndex = currentIndex + offset;
-  if (nextIndex < 0 || nextIndex >= selected.length) return selected;
-
-  const reordered = [...selected];
-  [reordered[currentIndex], reordered[nextIndex]] = [
-    reordered[nextIndex],
-    reordered[currentIndex],
-  ];
-  return reordered;
+  if (currentIndex < 0 || (direction !== "up" && direction !== "down")) {
+    return selected;
+  }
+  const offset = direction === "up" ? -1 : 1;
+  return reorderSelectedDevice(selected, key, currentIndex + offset);
 }
 
 export function mergeSettings(current, patch) {
@@ -147,6 +159,7 @@ export function createInspectorController({ send, view }) {
   let context = "";
   let settings = {};
   let discoveredDevices = [];
+  let recoveryMessage = "";
 
   const selectedDevices = () =>
     selectedDevicesFromSettings(settings, discoveredDevices);
@@ -167,6 +180,31 @@ export function createInspectorController({ send, view }) {
     view.applySettings(settings);
     render();
     send(buildSetSettingsMessage({ action, context, settings }));
+  };
+
+  const announce = (text) => {
+    recoveryMessage = text;
+    view.announce?.(text);
+  };
+
+  const dismissRecoveryMessage = () => {
+    if (!recoveryMessage) return;
+    recoveryMessage = "";
+    view.announce?.("");
+  };
+
+  const reorder = (key, targetIndex) => {
+    dismissRecoveryMessage();
+    const selected = selectedDevices();
+    const reordered = reorderSelectedDevice(selected, key, targetIndex);
+    const device = selected.find((entry) => entry.key === key);
+    if (!device || reordered.every((entry, index) => entry.key === selected[index]?.key)) {
+      return;
+    }
+    persist({ schemaVersion: 2, selectedDevices: reordered });
+    announce(
+      `Moved ${device.name} to position ${targetIndex + 1} of ${reordered.length}`
+    );
   };
 
   return {
@@ -195,6 +233,7 @@ export function createInspectorController({ send, view }) {
     },
 
     include(device, included) {
+      dismissRecoveryMessage();
       persist({
         schemaVersion: 2,
         selectedDevices: setDeviceIncluded(
@@ -206,21 +245,23 @@ export function createInspectorController({ send, view }) {
     },
 
     move(key, direction) {
-      persist({
-        schemaVersion: 2,
-        selectedDevices: moveSelectedDevice(
-          selectedDevices(),
-          key,
-          direction
-        ),
-      });
+      const selected = selectedDevices();
+      const currentIndex = selected.findIndex((device) => device.key === key);
+      if (currentIndex < 0 || (direction !== "up" && direction !== "down")) return;
+      reorder(key, currentIndex + (direction === "up" ? -1 : 1));
+    },
+
+    reorder(key, targetIndex) {
+      reorder(key, targetIndex);
     },
 
     changeSettings(patch) {
+      dismissRecoveryMessage();
       persist(patch);
     },
 
     refresh() {
+      dismissRecoveryMessage();
       view.showStatus(describeDiscoveryState({ state: "loading" }));
       sendPluginEvent("refreshDevices");
     },
@@ -323,25 +364,18 @@ export function describeDiscoveryState(payload) {
 export function renderDeviceList(container, rows, handlers) {
   const document = container.ownerDocument;
   const selectedCount = rows.filter((row) => row.included).length;
+  let draggedKey = null;
   const items = rows.map((row, index) => {
     const item = document.createElement("li");
-    item.className = `device-row${row.available ? "" : " device-row-missing"}`;
+    item.className = `device-row${row.available ? "" : " device-row-missing"}${
+      row.included ? " device-row-selected" : ""
+    }`;
 
     const line = document.createElement("div");
     line.className = "device-line";
 
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.id = `include-device-${index}`;
-    checkbox.checked = row.included;
-    checkbox.setAttribute("aria-label", `Include ${row.device.name} in cycle`);
-    checkbox.addEventListener("change", () => {
-      handlers.onIncluded(row.device, checkbox.checked);
-    });
-
-    const identity = document.createElement("label");
+    const identity = document.createElement(row.included ? "div" : "label");
     identity.className = "device-identity";
-    identity.setAttribute("for", checkbox.id);
 
     const name = document.createElement("span");
     name.className = "device-name";
@@ -363,12 +397,8 @@ export function renderDeviceList(container, rows, handlers) {
     }
 
     identity.append(name, metadata);
-    line.append(checkbox, identity);
 
     if (row.included) {
-      const order = document.createElement("div");
-      order.className = "order-controls";
-
       const position = document.createElement("span");
       position.className = "cycle-position";
       position.textContent = String((row.order ?? 0) + 1);
@@ -376,22 +406,59 @@ export function renderDeviceList(container, rows, handlers) {
         "aria-label",
         `Cycle position ${(row.order ?? 0) + 1} of ${selectedCount}`
       );
-      order.append(position);
 
-      if (row.initial) {
-        const initial = document.createElement("span");
-        initial.className = "initial-label";
-        initial.textContent = "Default";
-        order.append(initial);
-      }
+      const grip = document.createElement("span");
+      grip.className = "drag-grip";
+      grip.textContent = "↕";
+      grip.setAttribute("draggable", "true");
+      grip.setAttribute("aria-label", `Drag ${row.device.name} to reorder`);
+      grip.setAttribute("aria-grabbed", "false");
+      grip.addEventListener("dragstart", () => {
+        draggedKey = row.device.key;
+        grip.setAttribute("aria-grabbed", "true");
+      });
+      grip.addEventListener("dragend", () => {
+        draggedKey = null;
+        grip.setAttribute("aria-grabbed", "false");
+      });
 
-      const up = createMoveButton(document, row, "up", "↑", handlers.onMove);
-      const down = createMoveButton(document, row, "down", "↓", handlers.onMove);
-      up.disabled = row.order === 0;
-      down.disabled = row.order === selectedCount - 1;
-      order.append(up, down);
-      item.append(line, order);
+      const targetIndex = row.order ?? 0;
+      item.setAttribute("tabindex", "0");
+      item.setAttribute(
+        "aria-label",
+        `${row.device.name}, position ${targetIndex + 1} of ${selectedCount}. Use Alt+Arrow keys to reorder.`
+      );
+      item.addEventListener("dragover", (event) => {
+        if (draggedKey) event.preventDefault();
+      });
+      item.addEventListener("drop", () => {
+        if (!draggedKey) return;
+        handlers.onReorder(draggedKey, targetIndex);
+        draggedKey = null;
+        grip.setAttribute("aria-grabbed", "false");
+      });
+      item.addEventListener("keydown", (event) => {
+        if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) {
+          return;
+        }
+        const nextIndex = targetIndex + (event.key === "ArrowUp" ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= selectedCount) return;
+        event.preventDefault();
+        handlers.onReorder(row.device.key, nextIndex);
+      });
+      line.append(position, identity, grip);
+      item.append(line);
     } else {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `include-device-${index}`;
+      checkbox.checked = false;
+      checkbox.setAttribute("aria-label", `Include ${row.device.name} in cycle`);
+      checkbox.addEventListener("change", () => {
+        handlers.onIncluded(row.device, checkbox.checked);
+      });
+      identity.setAttribute("for", checkbox.id);
+      line.append(checkbox, identity);
       item.append(line);
     }
 
@@ -456,17 +523,6 @@ function uniqueDevices(values, preferredKeys = new Set()) {
   return devices;
 }
 
-function createMoveButton(document, row, direction, glyph, onMove) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "order-button";
-  button.textContent = glyph;
-  button.setAttribute("aria-label", `Move ${row.device.name} ${direction}`);
-  button.setAttribute("title", `Move ${direction}`);
-  button.addEventListener("click", () => onMove(row.device.key, direction));
-  return button;
-}
-
 function isRecord(value) {
   return typeof value === "object" && value !== null;
 }
@@ -504,8 +560,8 @@ function installPropertyInspector(window, document) {
         onIncluded(device, included) {
           controller.include(device, included);
         },
-        onMove(key, direction) {
-          controller.move(key, direction);
+        onReorder(key, targetIndex) {
+          controller.reorder(key, targetIndex);
         },
       });
       elements.empty.hidden = rows.length !== 0;
@@ -517,6 +573,10 @@ function installPropertyInspector(window, document) {
       const loading = status.tone === "loading";
       elements.refresh.disabled = loading;
       elements.refresh.setAttribute("aria-busy", String(loading));
+    },
+
+    announce(text) {
+      elements.status.textContent = text;
     },
   };
 
