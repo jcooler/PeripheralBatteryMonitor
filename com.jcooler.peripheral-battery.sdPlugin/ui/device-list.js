@@ -7,6 +7,9 @@ const PROVIDER_LABELS = Object.freeze({
   hid: "HID",
 });
 
+const TOUCH_REORDER_HOLD_MS = 500;
+const TOUCH_REORDER_MOVE_PX = 8;
+
 /**
  * Creates the single ordered list shown by the Property Inspector.
  * Configured devices remain visible even while absent from discovery.
@@ -498,6 +501,84 @@ export function renderDeviceList(container, rows, handlers) {
       });
 
       const targetIndex = row.order ?? 0;
+      let pointerState = null;
+      let pointerTimer = null;
+      const resetPointer = () => {
+        if (pointerTimer !== null) clearTimeout(pointerTimer);
+        pointerTimer = null;
+        if (pointerState && grip.hasPointerCapture?.(pointerState.id)) {
+          grip.releasePointerCapture(pointerState.id);
+        }
+        pointerState = null;
+        grip.setAttribute("aria-grabbed", "false");
+      };
+      grip.addEventListener("pointerdown", (event) => {
+        if (
+          (event.pointerType !== "touch" && event.pointerType !== "pen") ||
+          event.isPrimary === false
+        ) {
+          return;
+        }
+        resetPointer();
+        pointerState = {
+          id: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          active: false,
+          scrolling: false,
+          moved: false,
+          lastY: event.clientY,
+          targetIndex,
+        };
+        grip.setPointerCapture?.(event.pointerId);
+        pointerTimer = setTimeout(() => {
+          if (!pointerState || pointerState.id !== event.pointerId) return;
+          pointerTimer = null;
+          pointerState.active = true;
+          grip.setAttribute("aria-grabbed", "true");
+        }, TOUCH_REORDER_HOLD_MS);
+      });
+      grip.addEventListener("pointermove", (event) => {
+        if (!pointerState || pointerState.id !== event.pointerId) return;
+        const movement = Math.hypot(
+          event.clientX - pointerState.startX,
+          event.clientY - pointerState.startY
+        );
+        if (!pointerState.active) {
+          if (!pointerState.scrolling && movement >= TOUCH_REORDER_MOVE_PX) {
+            if (pointerTimer !== null) clearTimeout(pointerTimer);
+            pointerTimer = null;
+            pointerState.scrolling = true;
+          }
+          if (pointerState.scrolling) {
+            event.preventDefault();
+            document.defaultView?.scrollBy(0, pointerState.lastY - event.clientY);
+            pointerState.lastY = event.clientY;
+          }
+          return;
+        }
+        if (movement < TOUCH_REORDER_MOVE_PX) return;
+        event.preventDefault();
+        pointerState.moved = true;
+        const pointedRow = document
+          .elementFromPoint?.(event.clientX, event.clientY)
+          ?.closest?.(".device-row-selected");
+        if (!pointedRow) return;
+        const pointedIndex = [...container.children]
+          .filter((child) => child.matches?.(".device-row-selected"))
+          .indexOf(pointedRow);
+        if (pointedIndex >= 0) pointerState.targetIndex = pointedIndex;
+      });
+      grip.addEventListener("pointerup", (event) => {
+        if (!pointerState || pointerState.id !== event.pointerId) return;
+        const completed = pointerState;
+        if (completed.active) event.preventDefault();
+        resetPointer();
+        if (completed.active && completed.moved) {
+          handlers.onReorder(row.device.key, completed.targetIndex);
+        }
+      });
+      grip.addEventListener("pointercancel", resetPointer);
       item.setAttribute("tabindex", "0");
       item.setAttribute(
         "aria-label",
