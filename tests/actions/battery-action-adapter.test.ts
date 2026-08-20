@@ -63,7 +63,7 @@ function actionHandle(settings: Record<string, unknown>) {
 }
 
 describe("BatteryAction Stream Deck adapter", () => {
-  it("migrates an exact Logitech session alias without persisting the transient endpoint", async () => {
+  it("persists one exact Logitech migration and does not loop on its settings event", async () => {
     const canonical: DeviceDescriptor = {
       key: makeDeviceKey("logitech", "model:g502 x plus|mouse"),
       provider: "logitech",
@@ -74,10 +74,25 @@ describe("BatteryAction Stream Deck adapter", () => {
       physicalId: "logitech-model:model:g502 x plus|mouse",
       transientNativeIds: ["session:dev00000006"],
     };
+    const legacyDevice: DeviceRef = {
+      key: makeDeviceKey("logitech", "session:dev00000006"),
+      provider: "logitech",
+      providerLabel: "Logitech G Hub",
+      nativeId: "session:dev00000006",
+      name: "G502 X Plus",
+      deviceType: "Mouse",
+    };
     const legacy = {
-      deviceBrand: "logitech",
-      logiDeviceId: "dev00000006",
-      deviceName: "[Logi] G502 X Plus",
+      schemaVersion: 2,
+      selectedDevices: [legacyDevice],
+      activeDeviceKey: legacyDevice.key,
+      pollInterval: 45,
+      showPercentage: false,
+      showDeviceType: true,
+      showDeviceName: true,
+      showStatusText: true,
+      deviceTypeFontSize: 18,
+      backgroundColor: "#123456",
     };
     const fakeRuntime = runtime(Promise.resolve({
       devices: [canonical],
@@ -105,6 +120,94 @@ describe("BatteryAction Stream Deck adapter", () => {
     }]);
     expect(JSON.stringify(persisted)).not.toContain("dev00000006");
     expect(JSON.stringify(persisted)).not.toContain("transientNativeIds");
+    expect(persisted).toMatchObject({
+      schemaVersion: 2,
+      activeDeviceKey: canonical.key,
+      pollInterval: 45,
+      showPercentage: false,
+      showDeviceType: true,
+      showDeviceName: true,
+      showStatusText: true,
+      deviceTypeFontSize: 18,
+      backgroundColor: "#123456",
+    });
+    expect(fakeRuntime.updateSettings).toHaveBeenCalledWith(
+      "context-1",
+      persisted
+    );
+    expect(fakeRuntime.manualRefresh).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fakeRuntime.activeKey).mockReturnValue(canonical.key);
+    await action.onDidReceiveSettings({
+      action: handle,
+      payload: { settings: persisted },
+    } as never);
+
+    expect(handle.setSettings).toHaveBeenCalledTimes(1);
+    expect(fakeRuntime.manualRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: "unresolved",
+      savedName: "Pro Wireless Mouse",
+      devices: [{
+        key: makeDeviceKey("logitech", "model:g502 x plus|mouse"),
+        provider: "logitech" as const,
+        providerLabel: "Logitech G Hub",
+        nativeId: "model:g502 x plus|mouse",
+        name: "G502 X Plus",
+        deviceType: "Mouse",
+      }],
+    },
+    {
+      label: "ambiguous",
+      savedName: "G502 X Plus",
+      devices: ["serial:first", "serial:second"].map((nativeId) => ({
+        key: makeDeviceKey("logitech", nativeId),
+        provider: "logitech" as const,
+        providerLabel: "Logitech G Hub",
+        nativeId,
+        name: "G502 X Plus",
+        deviceType: "Mouse",
+      })),
+    },
+  ])("keeps a $label Logitech row unavailable without persisting", async ({
+    savedName,
+    devices,
+  }) => {
+    const nativeId = "session:stale-endpoint";
+    const savedDevice: DeviceRef = {
+      key: makeDeviceKey("logitech", nativeId),
+      provider: "logitech",
+      providerLabel: "Logitech G Hub",
+      nativeId,
+      name: savedName,
+      deviceType: "Mouse",
+    };
+    const saved = {
+      schemaVersion: 2,
+      selectedDevices: [savedDevice],
+      activeDeviceKey: savedDevice.key,
+    };
+    const fakeRuntime = runtime(Promise.resolve({
+      devices,
+      errors: [],
+      notices: [],
+      refreshedAt: 1,
+    }));
+    const handle = actionHandle(saved);
+    const action = new BatteryAction({ runtime: fakeRuntime });
+
+    await action.onWillAppear({
+      action: handle,
+      payload: { settings: saved },
+    } as never);
+
+    expect(fakeRuntime.appear).toHaveBeenCalledWith("context-1", saved);
+    expect(handle.setSettings).not.toHaveBeenCalled();
+    expect(fakeRuntime.updateSettings).not.toHaveBeenCalled();
+    expect(fakeRuntime.manualRefresh).not.toHaveBeenCalled();
   });
 
   it("serializes sanitized notices and labels partial provider success", async () => {

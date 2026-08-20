@@ -1,8 +1,13 @@
 import {
   makeDeviceKey,
+  type DeviceDescriptor,
   type DeviceRef,
   type ProviderId,
 } from "../devices/types";
+import {
+  mapLogitechDeviceType,
+  normalizeIdentityText,
+} from "../logitech/identity";
 
 export interface PersistedBatterySettings {
   [key: string]: unknown;
@@ -40,6 +45,13 @@ export interface ParsedBatterySettings {
   migrated: boolean;
 }
 
+export interface PreparedSettingsMigration {
+  selectedDevices: DeviceRef[];
+  activeDeviceKey: string | null;
+  safeToPersist: boolean;
+  changed: boolean;
+}
+
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   steelseries: "SteelSeries GG",
   logitech: "Logitech G Hub",
@@ -65,7 +77,9 @@ export function parseBatterySettings(
     ? parseSelectedDevices(orderedList)
     : migrateLegacyDevice(raw);
   const migrated =
-    (hasOrderedList && raw.schemaVersion !== 2) ||
+    (hasOrderedList &&
+      (raw.schemaVersion !== 2 ||
+        selectedDevices.some(isLegacyLogitechSelection))) ||
     (!hasOrderedList && selectedDevices.length > 0);
 
   return {
@@ -115,12 +129,15 @@ export function providerLabel(provider: ProviderId): string {
 
 export function prepareMigratedDevices(
   selectedDevices: readonly DeviceRef[],
-  discoveredDevices: readonly DeviceRef[]
-): { selectedDevices: DeviceRef[]; safeToPersist: boolean } {
+  discoveredDevices: readonly DeviceDescriptor[],
+  activeDeviceKey: string | null = null
+): PreparedSettingsMigration {
   const discoveredByKey = new Map(
     discoveredDevices.map((device) => [device.key, device])
   );
   let safeToPersist = true;
+  let changed = false;
+  const translatedKeys = new Map<string, string>();
   const prepared = selectedDevices.map((device) => {
     const canonical = discoveredByKey.get(device.key);
     if (canonical) {
@@ -132,14 +149,101 @@ export function prepareMigratedDevices(
         safeToPersist = false;
         return device;
       }
-      return canonical;
+      if (device.provider === "steelseries" && device.deviceType === "Device") {
+        const preparedCanonical = toDeviceRef(canonical);
+        if (!sameDeviceRef(device, preparedCanonical)) changed = true;
+        return preparedCanonical;
+      }
+      return device;
+    }
+    if (isLegacyLogitechSelection(device)) {
+      const migrated = findExactLegacyLogitechMatch(
+        device,
+        discoveredDevices
+      );
+      if (!migrated) {
+        safeToPersist = false;
+        return device;
+      }
+      const preparedCanonical = toDeviceRef(migrated);
+      translatedKeys.set(device.key, preparedCanonical.key);
+      changed = true;
+      return preparedCanonical;
     }
     if (device.provider === "steelseries" && device.deviceType === "Device") {
       safeToPersist = false;
     }
     return device;
   });
-  return { selectedDevices: prepared, safeToPersist };
+  const translatedActiveDeviceKey = activeDeviceKey
+    ? translatedKeys.get(activeDeviceKey) ?? activeDeviceKey
+    : null;
+  if (translatedActiveDeviceKey !== activeDeviceKey) changed = true;
+  return {
+    selectedDevices: prepared,
+    activeDeviceKey: translatedActiveDeviceKey,
+    safeToPersist,
+    changed,
+  };
+}
+
+function findExactLegacyLogitechMatch(
+  saved: DeviceRef,
+  discoveredDevices: readonly DeviceDescriptor[]
+): DeviceDescriptor | null {
+  const logitechDevices = discoveredDevices.filter(
+    (device) => device.provider === "logitech"
+  );
+  const aliasMatches = logitechDevices.filter((device) =>
+    device.transientNativeIds?.includes(saved.nativeId)
+  );
+  if (aliasMatches.length === 1) return aliasMatches[0];
+  if (aliasMatches.length > 1) return null;
+
+  const nameMatches = logitechDevices.filter(
+    (device) =>
+      normalizedIdentityEquals(saved.name, device.name) &&
+      (normalizeIdentityText(saved.deviceType) === "device" ||
+        normalizedIdentityEquals(
+          mapLogitechDeviceType(saved.deviceType),
+          mapLogitechDeviceType(device.deviceType)
+        ))
+  );
+  return nameMatches.length === 1 ? nameMatches[0] : null;
+}
+
+function normalizedIdentityEquals(left: string, right: string): boolean {
+  return normalizeIdentityText(left) === normalizeIdentityText(right);
+}
+
+function isLegacyLogitechSelection(device: DeviceRef): boolean {
+  return (
+    device.provider === "logitech" && device.nativeId.startsWith("session:")
+  );
+}
+
+function toDeviceRef(device: DeviceDescriptor): DeviceRef {
+  return {
+    key: device.key,
+    provider: device.provider,
+    providerLabel: device.providerLabel,
+    nativeId: device.nativeId,
+    name: device.name,
+    deviceType: device.deviceType,
+    ...(device.physicalId ? { physicalId: device.physicalId } : {}),
+  };
+}
+
+function sameDeviceRef(left: DeviceRef, right: DeviceRef): boolean {
+  return (
+    left.key === right.key &&
+    left.provider === right.provider &&
+    left.providerLabel === right.providerLabel &&
+    left.nativeId === right.nativeId &&
+    left.name === right.name &&
+    left.deviceType === right.deviceType &&
+    left.physicalId === right.physicalId
+  );
 }
 
 function parseSelectedDevices(values: unknown[]): DeviceRef[] {

@@ -128,28 +128,14 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       );
       if (!latestParsed.migrated) return;
       const prepared = prepareMigratedDevices(
-        resolveTransientMigrationAliases(
-          latestParsed.settings.selectedDevices,
-          discovery.devices
-        ),
-        discovery.devices
+        latestParsed.settings.selectedDevices,
+        discovery.devices,
+        latestParsed.settings.activeDeviceKey
       );
       if (this.handles.get(ev.action.id) !== ev.action) return;
       if (!prepared.safeToPersist) {
         streamDeck.logger.warn(
-          "Legacy SteelSeries settings remain unmodified until the exact GG device can be verified"
-        );
-        return;
-      }
-      if (
-        prepared.selectedDevices.some(
-          (device) =>
-            device.provider === "logitech" &&
-            device.nativeId.startsWith("session:")
-        )
-      ) {
-        streamDeck.logger.warn(
-          "Legacy Logitech settings remain unmodified until the exact G Hub device can be verified"
+          "Legacy device settings remain unmodified until every exact migration can be verified"
         );
         return;
       }
@@ -161,6 +147,11 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
           (device) => toPersistedDevice(device) as JsonObject
         ),
       } satisfies BatteryActionSettings;
+      if (prepared.activeDeviceKey) {
+        migrated.activeDeviceKey = prepared.activeDeviceKey;
+      } else {
+        delete migrated.activeDeviceKey;
+      }
       delete migrated.logiDeviceId;
       this.runtime.updateSettings(ev.action.id, migrated);
       this.runtime.manualRefresh(ev.action.id);
@@ -380,20 +371,6 @@ function discoveryMessage(result: DiscoveryResult): JsonObject {
     notices: (result.notices ?? []).map((notice) => ({ ...notice })),
     refreshedAt: result.refreshedAt,
   };
-}
-
-function resolveTransientMigrationAliases(
-  selectedDevices: readonly DeviceDescriptor[],
-  discoveredDevices: readonly DeviceDescriptor[]
-): DeviceDescriptor[] {
-  return selectedDevices.map((selected) => {
-    const matches = discoveredDevices.filter(
-      (discovered) =>
-        discovered.provider === selected.provider &&
-        discovered.transientNativeIds?.includes(selected.nativeId)
-    );
-    return matches.length === 1 ? matches[0] : selected;
-  });
 }
 
 function toInspectorDevice(device: DeviceDescriptor): JsonObject {
