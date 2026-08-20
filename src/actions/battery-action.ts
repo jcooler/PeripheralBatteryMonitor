@@ -97,6 +97,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
   private readonly runtime: BatteryActionRuntime;
   private readonly inspector: InspectorMessenger<JsonObject>;
   private readonly runtimeSummaries = new Map<string, ContextRuntimeSummary>();
+  private readonly renderGenerations = new Map<string, symbol>();
 
   constructor(options: BatteryActionOptions = {}) {
     super();
@@ -185,6 +186,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
     this.runtime.disappear(ev.action.id);
     this.handles.delete(ev.action.id);
     this.runtimeSummaries.delete(ev.action.id);
+    this.renderGenerations.delete(ev.action.id);
   }
 
   override async onKeyDown(
@@ -275,6 +277,11 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
   ): Promise<void> {
     const handle = this.handles.get(contextId);
     if (!handle) return;
+    const generation = Symbol(contextId);
+    this.renderGenerations.set(contextId, generation);
+    const isCurrentRender = () =>
+      this.handles.get(contextId) === handle &&
+      this.renderGenerations.get(contextId) === generation;
     const options = iconOptions(render.settings);
     const indicator =
       render.kind === "empty"
@@ -285,6 +292,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       await handle.setImage(
         generateLoadingIcon(render.settings.backgroundColor, indicator)
       );
+      if (!isCurrentRender()) return;
       await this.sendRuntimeSummary(contextId, render.device.key);
       return;
     }
@@ -292,6 +300,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       await handle.setImage(
         generateErrorIcon("Select Device", render.settings.backgroundColor)
       );
+      if (!isCurrentRender()) return;
       this.runtimeSummaries.set(contextId, {
         currentDeviceKey: null,
         statuses: new Map(),
@@ -313,6 +322,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       await handle.setImage(
         generateErrorIcon(message, render.settings.backgroundColor, indicator)
       );
+      if (!isCurrentRender()) return;
       this.cacheRuntimeStatus(contextId, device.key, status);
       await this.sendCachedRuntimeSummary(contextId);
       return;
@@ -331,6 +341,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
           indicator
         )
       );
+      if (!isCurrentRender()) return;
       this.cacheRuntimeStatus(contextId, device.key, status);
       await this.sendCachedRuntimeSummary(contextId);
       return;
@@ -346,6 +357,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       providerLabel: status.providerLabel,
     };
     await handle.setImage(generateBatteryIcon(info, options, indicator));
+    if (!isCurrentRender()) return;
     this.cacheRuntimeStatus(contextId, device.key, status);
     await this.sendCachedRuntimeSummary(contextId);
   }

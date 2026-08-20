@@ -466,6 +466,136 @@ describe("BatteryAction Stream Deck adapter", () => {
     ]);
   });
 
+  it("does not let an older image completion overwrite a newer runtime summary", async () => {
+    const olderDevice = steelSeriesDevice();
+    const newerDevice = windowsKeyboard();
+    const selectedDevices = [olderDevice, newerDevice];
+    const persisted = { schemaVersion: 2, selectedDevices };
+    const fakeRuntime = runtime(Promise.resolve({
+      devices: selectedDevices,
+      errors: [],
+      refreshedAt: 1,
+    }));
+    const olderImage = deferred<void>();
+    const newerImage = deferred<void>();
+    const handle = actionHandle(persisted);
+    vi.mocked(handle.setImage)
+      .mockImplementationOnce(() => olderImage.promise)
+      .mockImplementationOnce(() => newerImage.promise);
+    const sent: any[] = [];
+    const inspector = new InspectorMessenger({
+      activeContextId: () => "context-1",
+      send: async (message) => { sent.push(message); },
+    });
+    const action = new BatteryAction({ runtime: fakeRuntime, inspector });
+    await action.onWillAppear({ action: handle, payload: { settings: persisted } } as never);
+    const settings = {
+      selectedDevices,
+      pollInterval: 30,
+      showPercentage: true,
+      showDeviceType: false,
+      showDeviceName: false,
+      showStatusText: false,
+      deviceTypeFontSize: 13,
+      backgroundColor: "#0d1117",
+    };
+    const render = (value: SessionRender) =>
+      (action as unknown as {
+        render(contextId: string, render: SessionRender): Promise<void>;
+      }).render("context-1", value);
+
+    const olderRender = render({
+      kind: "status",
+      device: olderDevice,
+      status: {
+        state: "disconnected",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: 1,
+      },
+      settings,
+    });
+    await vi.waitFor(() => expect(handle.setImage).toHaveBeenCalledTimes(1));
+    const newerRender = render({
+      kind: "status",
+      device: newerDevice,
+      status: {
+        state: "connected",
+        level: { kind: "percentage", value: 72 },
+        charging: false,
+        provider: "windows",
+        providerLabel: "Windows Bluetooth",
+        observedAt: 2,
+      },
+      settings,
+    });
+    await vi.waitFor(() => expect(handle.setImage).toHaveBeenCalledTimes(2));
+
+    newerImage.resolve(undefined);
+    await newerRender;
+    olderImage.resolve(undefined);
+    await olderRender;
+
+    expect(sent.filter((message) => message.event === "deviceRuntimeStatus")).toEqual([{
+      event: "deviceRuntimeStatus",
+      currentDeviceKey: newerDevice.key,
+      statuses: [{
+        deviceKey: newerDevice.key,
+        state: "connected",
+        batteryText: "72%",
+      }],
+    }]);
+  });
+
+  it("does not recreate runtime state when an in-flight image finishes after disappear", async () => {
+    const device = steelSeriesDevice();
+    const persisted = { schemaVersion: 2, selectedDevices: [device] };
+    const fakeRuntime = runtime(Promise.resolve({
+      devices: [device],
+      errors: [],
+      refreshedAt: 1,
+    }));
+    const pendingImage = deferred<void>();
+    const handle = actionHandle(persisted);
+    vi.mocked(handle.setImage).mockImplementationOnce(() => pendingImage.promise);
+    const sent: any[] = [];
+    const inspector = new InspectorMessenger({
+      activeContextId: () => "context-1",
+      send: async (message) => { sent.push(message); },
+    });
+    const action = new BatteryAction({ runtime: fakeRuntime, inspector });
+    await action.onWillAppear({ action: handle, payload: { settings: persisted } } as never);
+
+    const rendering = (action as unknown as {
+      render(contextId: string, render: SessionRender): Promise<void>;
+    }).render("context-1", {
+      kind: "loading",
+      device,
+      settings: {
+        selectedDevices: [device],
+        pollInterval: 30,
+        showPercentage: true,
+        showDeviceType: false,
+        showDeviceName: false,
+        showStatusText: false,
+        deviceTypeFontSize: 13,
+        backgroundColor: "#0d1117",
+      },
+    });
+    await vi.waitFor(() => expect(handle.setImage).toHaveBeenCalledTimes(1));
+    await action.onWillDisappear({ action: handle } as never);
+
+    pendingImage.resolve(undefined);
+    await rendering;
+
+    expect(sent.filter((message) => message.event === "deviceRuntimeStatus")).toEqual([]);
+    sent.length = 0;
+    await action.onSendToPlugin({ action: handle, payload: { event: "getDevices" } } as never);
+    expect(sent.filter((message) => message.event === "deviceRuntimeStatus")).toEqual([]);
+  });
+
   it("replays a cached runtime summary to the inspector and clears it on disappear", async () => {
     const device = steelSeriesDevice();
     const persisted = { schemaVersion: 2, selectedDevices: [device] };
