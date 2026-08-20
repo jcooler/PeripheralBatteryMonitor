@@ -316,9 +316,10 @@ export class LogitechClient implements DeviceProvider {
         finish(true);
         if (this.hasDiscovered) {
           this.diagnosticSink.info("Logitech G Hub reconnected");
-          if (!this.discoveryInFlight) {
-            queueMicrotask(() => void this.runReconnectDiscovery(generation));
-          }
+          const discovery = this.discoveryInFlight ?? undefined;
+          queueMicrotask(() =>
+            void this.runReconnectDiscovery(generation, discovery)
+          );
         }
       });
       socket.on("message", (data) => {
@@ -403,7 +404,9 @@ export class LogitechClient implements DeviceProvider {
           provider: PROVIDER_ID,
           kind: "recovered",
           message,
-          deviceKey: descriptor.key,
+          ...(candidate.kind === "model"
+            ? { deviceKey: descriptor.key }
+            : {}),
         });
       }
     }
@@ -572,10 +575,13 @@ export class LogitechClient implements DeviceProvider {
     this.reconnectTimer = null;
   }
 
-  private async runReconnectDiscovery(socketGeneration: number): Promise<void> {
+  private async runReconnectDiscovery(
+    socketGeneration: number,
+    discovery?: Promise<DeviceDescriptor[]>
+  ): Promise<void> {
     if (!this.isCurrentSocketGeneration(socketGeneration)) return;
     try {
-      await this.discover();
+      await (discovery ?? this.discover());
     } catch (error) {
       if (!this.isCurrentSocketGeneration(socketGeneration)) return;
       this.endpoints.clear();

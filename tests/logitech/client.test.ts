@@ -251,6 +251,32 @@ describe("Logitech G Hub provider", () => {
     ]);
   });
 
+  it("omits serial-derived device keys from recovery notices", async () => {
+    const reportedDevices: GHubDevice[] = [{
+      id: "dev00000081",
+      serialNumber: "SERIAL-SECRET-81",
+      extendedDisplayName: "G Pro Wireless",
+      deviceType: "mouse",
+      capabilities: { hasBatteryStatus: true },
+    }];
+    const { client } = setup(reportedDevices);
+    await client.discover();
+
+    reportedDevices[0] = { ...reportedDevices[0], id: "dev00000082" };
+    client.invalidateDiscovery("G Hub remapped its endpoint");
+    await client.discover();
+
+    const notices = client.discoveryNotices();
+    expect(notices).toEqual([{
+      provider: "logitech",
+      kind: "recovered",
+      message: "G Pro Wireless reconnected through G Hub",
+    }]);
+    expect(JSON.stringify(notices)).not.toMatch(
+      /serial-secret-81|serial%3A|dev0000008[12]/i
+    );
+  });
+
   it("reads live status for only the exact configured endpoint without rediscovery", async () => {
     const { client, sockets } = setup();
     const [mouse] = await client.discover();
@@ -484,6 +510,63 @@ describe("Logitech G Hub provider", () => {
       state: "connected",
       level: { kind: "percentage", value: 61 },
     });
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("retries the in-flight discovery that opened a reconnect socket without duplicate retry storms", async () => {
+    vi.useFakeTimers();
+    let discoveryAttempt = 0;
+    const sockets: FakeSocket[] = [];
+    const currentDevices: GHubDevice[] = [{
+      id: "dev00000061",
+      extendedDisplayName: "G502 X Plus",
+      deviceType: "mouse",
+      capabilities: { hasBatteryStatus: true },
+    }];
+    const client = track(new LogitechClient({
+      createSocket: () => {
+        const socket = new FakeSocket();
+        socket.responder = (message) => {
+          if (message.path === "/devices/list") {
+            discoveryAttempt += 1;
+            const response = discoveryAttempt === 2
+              ? { msgId: message.msgId, error: "temporary G Hub failure" }
+              : { msgId: message.msgId, payload: { deviceInfos: currentDevices } };
+            queueMicrotask(() =>
+              socket.emit("message", Buffer.from(JSON.stringify(response)))
+            );
+          } else if (message.path === "/battery/dev00000062/state") {
+            queueMicrotask(() => socket.emit("message", Buffer.from(JSON.stringify({
+              msgId: message.msgId,
+              payload: { percentage: 64, charging: false },
+            }))));
+          }
+        };
+        sockets.push(socket);
+        queueMicrotask(() => socket.emit("open"));
+        return socket;
+      },
+      requestTimeoutMs: 100,
+      connectTimeoutMs: 100,
+    }));
+    const [persistent] = await client.discover();
+
+    currentDevices[0] = { ...currentDevices[0], id: "dev00000062" };
+    sockets[0].emit("close");
+    const reconnectDiscovery = client.discover();
+    await expect(reconnectDiscovery).rejects.toThrow("request failed");
+    expect(sockets).toHaveLength(2);
+    expect(discoveryAttempt).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(discoveryAttempt).toBe(3));
+    await expect(client.readStatus(persistent)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 64 },
+    });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(discoveryAttempt).toBe(3);
     expect(sockets).toHaveLength(2);
   });
 
