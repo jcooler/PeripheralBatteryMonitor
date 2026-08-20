@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -11,6 +13,10 @@ import {
   moveSelectedDevice,
   reorderSelectedDevice,
   renderDeviceList,
+  renderInspectorAnnouncement,
+  renderInspectorRecovery,
+  renderInspectorStatus,
+  routeInspectorMessage,
   selectedDevicesFromSettings,
   setDeviceIncluded,
 } from "../../com.jcooler.peripheral-battery.sdPlugin/ui/device-list.js";
@@ -365,6 +371,31 @@ describe("Property Inspector device-list model", () => {
       tone: "error",
       text: "Windows scan failed",
     });
+    expect(describeDiscoveryState({ state: "partial", devices: [windowsKeyboard] })).toEqual({
+      tone: "partial",
+      text: "1 device found; some providers failed",
+    });
+  });
+
+  it("renders hostile discovery status and reorder announcements only as text", () => {
+    const document = new FakeDocument();
+    const status = document.createElement("div");
+    const refresh = document.createElement("button");
+    const announcement = document.createElement("div");
+    const recovery = document.createElement("div");
+    const hostileStatus = '<img src=x onerror="globalThis.statusPwned=true">';
+    const hostileAnnouncement = '<svg onload="globalThis.announcePwned=true">';
+
+    renderInspectorStatus(status, refresh, { tone: "error", text: hostileStatus });
+    renderInspectorAnnouncement(announcement, hostileAnnouncement);
+    renderInspectorRecovery(recovery, hostileAnnouncement);
+
+    expect(status.textContent).toBe(hostileStatus);
+    expect(announcement.textContent).toBe(hostileAnnouncement);
+    expect(recovery.textContent).toBe(hostileAnnouncement);
+    expect(findAll(status, "img")).toHaveLength(0);
+    expect(findAll(announcement, "svg")).toHaveLength(0);
+    expect(findAll(recovery, "svg")).toHaveLength(0);
   });
 
   it("maps every existing display control to its persisted setting", () => {
@@ -411,12 +442,210 @@ describe("Property Inspector device-list model", () => {
     ]);
     expect(collectText(list)).toContain("XInput");
     expect(collectText(list)).toContain("Windows Bluetooth");
+    expect(selectedRowsChildren(list)).toEqual([
+      ["cycle-position", "device-identity", "drag-grip"],
+      ["cycle-position", "device-identity", "drag-grip"],
+    ]);
 
     const inputs = findAll(list, "input");
     inputs[0].checked = true;
     inputs[0].dispatch("change");
     expect(included).toEqual([["steelseries:7", true]]);
     expect(reordered).toEqual([]);
+  });
+
+  it("merges runtime summaries into exact device keys and renders current connection and battery state", () => {
+    const rendered: any[] = [];
+    const controller = createInspectorController({
+      send() {},
+      view: {
+        applySettings() {},
+        renderRows: (rows) => rendered.push(rows),
+        showStatus() {},
+      },
+    });
+    controller.open({
+      action: "action",
+      context: "context",
+      settings: { schemaVersion: 2, selectedDevices: [windowsKeyboard, steelSeriesMouse] },
+    });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard, steelSeriesMouse, xinputController],
+    });
+
+    controller.receiveRuntimeStatus({
+      currentDeviceKey: "windows:BTH-2",
+      statuses: [
+        { deviceKey: "windows:BTH-2", state: "connected", batteryText: "72%" },
+        { deviceKey: "steelseries:7", state: "disconnected", batteryText: "Disconnected" },
+        { deviceKey: "xinput:slot%3A0", state: "unavailable", batteryText: "Unavailable" },
+        { deviceKey: "windows-gamepad:raw-controller-1", state: "connected", batteryText: "99%" },
+      ],
+    });
+
+    expect(rendered.at(-1)).toMatchObject([
+      {
+        current: true,
+        runtimeStatus: { state: "connected", batteryText: "72%" },
+        device: { key: "windows:BTH-2" },
+      },
+      {
+        current: false,
+        runtimeStatus: { state: "disconnected", batteryText: "Disconnected" },
+        device: { key: "steelseries:7" },
+      },
+      {
+        current: false,
+        runtimeStatus: { state: "unavailable", batteryText: "Unavailable" },
+        device: { key: "xinput:slot%3A0" },
+      },
+    ]);
+
+    const document = new FakeDocument();
+    const list = document.createElement("ol");
+    renderDeviceList(list, rendered.at(-1), { onIncluded() {}, onReorder() {} });
+    expect(findByClass(list, "device-row-current")).toHaveLength(1);
+    expect(collectText(list)).toContain("Connected");
+    expect(collectText(list)).toContain("72%");
+    expect(collectText(list)).toContain("Disconnected");
+    expect(collectText(list)).toContain("Unavailable");
+    expect(collectText(list)).not.toContain("99%");
+  });
+
+  it("keeps runtime summaries out of persisted settings", () => {
+    const sent: any[] = [];
+    const controller = createInspectorController({
+      send: (message) => sent.push(message),
+      view: { applySettings() {}, renderRows() {}, showStatus() {} },
+    });
+    controller.open({
+      action: "action",
+      context: "context",
+      settings: { schemaVersion: 2, selectedDevices: [windowsKeyboard] },
+    });
+    controller.receiveRuntimeStatus({
+      currentDeviceKey: windowsKeyboard.key,
+      statuses: [{ deviceKey: windowsKeyboard.key, state: "connected", batteryText: "72%" }],
+    });
+    sent.length = 0;
+
+    controller.changeSettings({ showDeviceName: true });
+
+    expect(sent[0].payload).toMatchObject({ showDeviceName: true });
+    expect(sent[0].payload).not.toHaveProperty("currentDeviceKey");
+    expect(sent[0].payload).not.toHaveProperty("statuses");
+  });
+
+  it("drops non-persistent runtime state when the inspector opens another context", () => {
+    const rendered: any[] = [];
+    const controller = createInspectorController({
+      send() {},
+      view: {
+        applySettings() {},
+        renderRows: (rows) => rendered.push(rows),
+        showStatus() {},
+      },
+    });
+    const connection = {
+      action: "action",
+      settings: { schemaVersion: 2, selectedDevices: [windowsKeyboard] },
+    };
+    controller.open({ ...connection, context: "context-1" });
+    controller.receiveDeviceList({ state: "success", devices: [windowsKeyboard] });
+    controller.receiveRuntimeStatus({
+      currentDeviceKey: windowsKeyboard.key,
+      statuses: [{ deviceKey: windowsKeyboard.key, state: "connected", batteryText: "72%" }],
+    });
+
+    controller.open({ ...connection, context: "context-2" });
+
+    expect(rendered.at(-1)[0]).toMatchObject({
+      current: false,
+      runtimeStatus: null,
+    });
+  });
+
+  it("shows recovery only for recovered notices and clears it on ordinary interaction and refresh", () => {
+    const recovery: string[] = [];
+    const controller = createInspectorController({
+      send() {},
+      view: {
+        applySettings() {},
+        renderRows() {},
+        showStatus() {},
+        showRecovery: (text) => recovery.push(text),
+      },
+    });
+    controller.open({
+      action: "action",
+      context: "context",
+      settings: { schemaVersion: 2, selectedDevices: [windowsKeyboard] },
+    });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard],
+      notices: [{ provider: "forged", kind: "recovered", message: "Forged recovery" }],
+    });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard],
+      notices: [{ provider: "logitech", kind: "ambiguous", message: "Choose a match" }],
+    });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard],
+      notices: [{ provider: "logitech", kind: "recovered", message: "G502 X Plus reconnected" }],
+    });
+    controller.changeSettings({ showDeviceName: true });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard],
+      notices: [{ provider: "logitech", kind: "recovered", message: "Recovered again" }],
+    });
+    controller.refresh();
+
+    expect(recovery).toEqual(["G502 X Plus reconnected", "", "Recovered again", ""]);
+  });
+
+  it("routes runtime status messages additively while retaining device-list and settings routes", () => {
+    const calls: string[] = [];
+    const controller = {
+      receiveDeviceList() { calls.push("devices"); },
+      receiveRuntimeStatus() { calls.push("runtime"); },
+      receiveSettings() { calls.push("settings"); },
+    };
+
+    routeInspectorMessage(controller, {
+      event: "sendToPropertyInspector",
+      payload: { event: "deviceList" },
+    });
+    routeInspectorMessage(controller, {
+      event: "sendToPropertyInspector",
+      payload: { event: "deviceRuntimeStatus" },
+    });
+    routeInspectorMessage(controller, {
+      event: "didReceiveSettings",
+      payload: { settings: { showDeviceName: true } },
+    });
+
+    expect(calls).toEqual(["devices", "runtime", "settings"]);
+  });
+
+  it("defines the compact selected-row grid without legacy arrow-control space", () => {
+    const html = readFileSync(
+      new URL("../../com.jcooler.peripheral-battery.sdPlugin/ui/battery.html", import.meta.url),
+      "utf8"
+    );
+
+    expect(html).toMatch(/\.device-row-selected\s+\.device-line\s*\{[^}]*grid-template-columns:\s*24px\s+minmax\(0,\s*1fr\)\s+44px/s);
+    expect(html).toMatch(/\.drag-grip\s*\{[^}]*(?:width|min-width):\s*44px;[^}]*(?:height|min-height):\s*44px/s);
+    expect(html).toMatch(/\.device-name\s*\{[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/s);
+    expect(html).not.toContain(".order-controls");
+    expect(html).not.toContain(".order-button");
+    expect(html).toContain('id="reorderAnnouncement"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toMatch(/drag[^<]*Alt\+Arrow/i);
   });
 
   it("reorders selected rows through drag targets and never makes an unselected row draggable", () => {
@@ -720,4 +949,10 @@ function findByClass(root: FakeElement, className: string): FakeElement[] {
 
 function collectText(root: FakeElement): string {
   return [root.textContent, ...root.children.map(collectText)].join(" ");
+}
+
+function selectedRowsChildren(root: FakeElement): string[][] {
+  return findByClass(root, "device-row-selected").map((row) =>
+    row.children[0].children.map((child) => child.className)
+  );
 }

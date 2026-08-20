@@ -327,6 +327,198 @@ describe("BatteryAction Stream Deck adapter", () => {
     });
   });
 
+  it("sends fixed runtime battery summaries without exposing unavailable details", async () => {
+    const percentageDevice = steelSeriesDevice();
+    const qualitativeDevice = windowsKeyboard();
+    const unavailableDevice: DeviceRef = {
+      key: makeDeviceKey("xinput", "slot:0"),
+      provider: "xinput",
+      providerLabel: "XInput",
+      nativeId: "slot:0",
+      name: "Controller 1",
+      deviceType: "Controller",
+    };
+    const selectedDevices = [percentageDevice, qualitativeDevice, unavailableDevice];
+    const persisted = { schemaVersion: 2, selectedDevices };
+    const fakeRuntime = runtime(Promise.resolve({ devices: selectedDevices, errors: [], refreshedAt: 1 }));
+    const handle = actionHandle(persisted);
+    const sent: unknown[] = [];
+    const inspector = new InspectorMessenger({
+      activeContextId: () => "context-1",
+      send: async (message) => { sent.push(message); },
+    });
+    const action = new BatteryAction({ runtime: fakeRuntime, inspector });
+    await action.onWillAppear({ action: handle, payload: { settings: persisted } } as never);
+    const render = (value: SessionRender) =>
+      (action as unknown as {
+        render(contextId: string, render: SessionRender): Promise<void>;
+      }).render("context-1", value);
+    const settings = {
+      selectedDevices,
+      pollInterval: 30,
+      showPercentage: true,
+      showDeviceType: false,
+      showDeviceName: false,
+      showStatusText: false,
+      deviceTypeFontSize: 13,
+      backgroundColor: "#0d1117",
+    };
+
+    await render({
+      kind: "status",
+      device: percentageDevice,
+      status: {
+        state: "connected",
+        level: { kind: "percentage", value: 72 },
+        charging: false,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: 1,
+      },
+      settings,
+    });
+    await render({
+      kind: "status",
+      device: qualitativeDevice,
+      status: {
+        state: "connected",
+        level: { kind: "qualitative", value: "low" },
+        charging: null,
+        provider: "windows",
+        providerLabel: "Windows Bluetooth",
+        observedAt: 2,
+      },
+      settings,
+    });
+    await render({
+      kind: "status",
+      device: unavailableDevice,
+      status: {
+        state: "unavailable",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: "xinput",
+        providerLabel: "XInput",
+        observedAt: 3,
+        detail: '<img src=x onerror="globalThis.pwned=true"> secret path',
+      },
+      settings,
+    });
+
+    expect(sent.at(-1)).toEqual({
+      event: "deviceRuntimeStatus",
+      currentDeviceKey: unavailableDevice.key,
+      statuses: [
+        { deviceKey: percentageDevice.key, state: "connected", batteryText: "72%" },
+        { deviceKey: qualitativeDevice.key, state: "connected", batteryText: "Low" },
+        { deviceKey: unavailableDevice.key, state: "unavailable", batteryText: "Unavailable" },
+      ],
+    });
+    expect(JSON.stringify(sent)).not.toContain("secret path");
+    expect(JSON.stringify(sent)).not.toContain("onerror");
+  });
+
+  it.each([
+    ["empty", "Empty"],
+    ["low", "Low"],
+    ["medium", "Medium"],
+    ["full", "Full"],
+  ] as const)("uses the fixed %s qualitative label in runtime summaries", async (level, label) => {
+    const device = steelSeriesDevice();
+    const persisted = { schemaVersion: 2, selectedDevices: [device] };
+    const fakeRuntime = runtime(Promise.resolve({ devices: [device], errors: [], refreshedAt: 1 }));
+    const handle = actionHandle(persisted);
+    const sent: any[] = [];
+    const inspector = new InspectorMessenger({
+      activeContextId: () => "context-1",
+      send: async (message) => { sent.push(message); },
+    });
+    const action = new BatteryAction({ runtime: fakeRuntime, inspector });
+    await action.onWillAppear({ action: handle, payload: { settings: persisted } } as never);
+
+    await (action as unknown as {
+      render(contextId: string, render: SessionRender): Promise<void>;
+    }).render("context-1", {
+      kind: "status",
+      device,
+      status: {
+        state: "connected",
+        level: { kind: "qualitative", value: level },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: 1,
+      },
+      settings: {
+        selectedDevices: [device],
+        pollInterval: 30,
+        showPercentage: true,
+        showDeviceType: false,
+        showDeviceName: false,
+        showStatusText: false,
+        deviceTypeFontSize: 13,
+        backgroundColor: "#0d1117",
+      },
+    });
+
+    expect(sent.at(-1).statuses).toEqual([
+      { deviceKey: device.key, state: "connected", batteryText: label },
+    ]);
+  });
+
+  it("replays a cached runtime summary to the inspector and clears it on disappear", async () => {
+    const device = steelSeriesDevice();
+    const persisted = { schemaVersion: 2, selectedDevices: [device] };
+    const discovery = { devices: [device], errors: [], refreshedAt: 1 };
+    const fakeRuntime = runtime(Promise.resolve(discovery));
+    const handle = actionHandle(persisted);
+    const sent: any[] = [];
+    const inspector = new InspectorMessenger({
+      activeContextId: () => "context-1",
+      send: async (message) => { sent.push(message); },
+    });
+    const action = new BatteryAction({ runtime: fakeRuntime, inspector });
+    await action.onWillAppear({ action: handle, payload: { settings: persisted } } as never);
+    await (action as unknown as {
+      render(contextId: string, render: SessionRender): Promise<void>;
+    }).render("context-1", {
+      kind: "status",
+      device,
+      status: {
+        state: "disconnected",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: 1,
+        detail: "device may be sleeping",
+      },
+      settings: {
+        selectedDevices: [device],
+        pollInterval: 30,
+        showPercentage: true,
+        showDeviceType: false,
+        showDeviceName: false,
+        showStatusText: false,
+        deviceTypeFontSize: 13,
+        backgroundColor: "#0d1117",
+      },
+    });
+    sent.length = 0;
+
+    await action.onSendToPlugin({ action: handle, payload: { event: "getDevices" } } as never);
+    expect(sent.filter((message) => message.event === "deviceRuntimeStatus")).toEqual([{
+      event: "deviceRuntimeStatus",
+      currentDeviceKey: device.key,
+      statuses: [{ deviceKey: device.key, state: "disconnected", batteryText: "Disconnected" }],
+    }]);
+
+    await action.onWillDisappear({ action: handle } as never);
+    sent.length = 0;
+    await action.onSendToPlugin({ action: handle, payload: { event: "getDevices" } } as never);
+    expect(sent.filter((message) => message.event === "deviceRuntimeStatus")).toEqual([]);
+  });
+
   it("enriches a prefixed v1 selection and renders through its exact action handle", async () => {
     const device = steelSeriesDevice();
     const legacy = {

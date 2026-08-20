@@ -25,6 +25,8 @@
       body {
         margin: 0;
         padding: 8px 12px 14px;
+        min-width: 0;
+        overflow-x: hidden;
         background: var(--canvas);
         color: var(--text);
         font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -45,8 +47,30 @@
 
       .status-loading { color: var(--warn); }
       .status-success { color: var(--good); }
+      .status-partial { color: var(--warn); }
       .status-empty { color: var(--muted); }
       .status-error { color: var(--bad); }
+
+      .recovery-notice {
+        margin: -4px 0 10px;
+        padding: 7px 9px;
+        border: 1px solid rgba(114, 199, 122, .55);
+        border-radius: 4px;
+        background: rgba(114, 199, 122, .08);
+        color: var(--good);
+      }
+
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
 
       .section-header {
         display: flex;
@@ -71,7 +95,7 @@
         font-size: 10px;
       }
 
-      .refresh-btn, .order-button {
+      .refresh-btn {
         border: 1px solid #575757;
         border-radius: 4px;
         background: var(--surface-raised);
@@ -85,7 +109,7 @@
         white-space: nowrap;
       }
 
-      .refresh-btn:hover:not(:disabled), .order-button:hover:not(:disabled) {
+      .refresh-btn:hover:not(:disabled) {
         border-color: #777;
         background: #4b4b4b;
       }
@@ -113,7 +137,12 @@
       }
 
       .device-row:focus-within { border-color: #6b6b6b; }
+      .device-row:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
       .device-row-missing { border-style: dashed; }
+      .device-row-current { border-color: rgba(255, 90, 31, .72); }
 
       .device-line {
         display: grid;
@@ -122,6 +151,13 @@
         gap: 7px;
         min-height: 42px;
         padding: 6px 8px;
+      }
+
+      .device-row-selected .device-line {
+        grid-template-columns: 24px minmax(0, 1fr) 44px;
+        gap: 6px;
+        min-height: 48px;
+        padding: 2px 4px 2px 8px;
       }
 
       .device-line input[type="checkbox"] {
@@ -134,8 +170,11 @@
       .device-identity {
         display: grid;
         min-width: 0;
+        overflow: hidden;
         cursor: pointer;
       }
+
+      .device-row-selected .device-identity { cursor: default; }
 
       .device-name {
         overflow: hidden;
@@ -153,6 +192,7 @@
         margin-top: 2px;
         color: var(--muted);
         font-size: 10px;
+        overflow: hidden;
       }
 
       .provider-label {
@@ -161,16 +201,21 @@
         white-space: nowrap;
       }
 
-      .availability-label { color: var(--bad); }
+      .availability-label, .connection-unavailable, .connection-disconnected {
+        color: var(--bad);
+      }
 
-      .order-controls {
-        display: grid;
-        grid-template-columns: 20px minmax(0, 1fr) 28px 28px;
-        align-items: center;
-        gap: 4px;
-        min-height: 31px;
-        padding: 3px 6px 5px 31px;
-        border-top: 1px solid #444;
+      .current-label {
+        color: #ff956e;
+        font-weight: 600;
+      }
+
+      .connection-connected { color: var(--good); }
+
+      .battery-value {
+        flex: 0 0 auto;
+        color: var(--text);
+        font: 600 10px/1 Consolas, "SFMono-Regular", monospace;
       }
 
       .cycle-position {
@@ -184,25 +229,21 @@
         font: 600 10px/1 Consolas, "SFMono-Regular", monospace;
       }
 
-      .initial-label {
-        width: max-content;
-        padding: 1px 5px;
-        border: 1px solid rgba(255, 90, 31, .5);
-        border-radius: 3px;
-        color: #ff956e;
-        font-size: 9px;
-        font-weight: 600;
-        letter-spacing: .04em;
-        text-transform: uppercase;
+      .drag-grip {
+        display: grid;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        place-items: center;
+        border-left: 1px solid #494949;
+        color: var(--muted);
+        cursor: grab;
+        font: 18px/1 "Segoe UI Symbol", "Segoe UI", sans-serif;
+        touch-action: none;
+        user-select: none;
       }
 
-      .order-button {
-        width: 28px;
-        height: 24px;
-        padding: 0;
-        font-size: 14px;
-        line-height: 1;
-      }
+      .drag-grip:active { cursor: grabbing; }
 
       .empty-state {
         margin: 5px 0 0;
@@ -266,7 +307,7 @@
 
       .color-row span {
         color: var(--muted);
-        font: 10px/1 Consolas, "SFMono-Regular", monospace;
+        font: 10px/1 "Segoe UI", sans-serif;
       }
 
       .info-text { margin: 10px 0 0; color: var(--quiet); font-size: 10px; text-align: center; }
@@ -274,7 +315,6 @@
       @media (max-width: 270px) {
         body { padding-inline: 9px; }
         .sdpi-item { grid-template-columns: 78px minmax(0, 1fr); }
-        .order-controls { padding-left: 12px; }
       }
     </style>
   </head>
@@ -282,13 +322,15 @@
     <div id="status" class="status-bar status-loading" role="status" aria-live="polite">
       Loading devices…
     </div>
+    <div id="recoveryNotice" class="recovery-notice" role="status" hidden></div>
+    <div id="reorderAnnouncement" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
     <section aria-labelledby="cycleHeading">
       <div class="section-header">
         <h2 id="cycleHeading">Cycle devices</h2>
         <button class="refresh-btn" id="refreshBtn" type="button" aria-busy="true">Refresh</button>
       </div>
-      <p class="section-help">Checked devices cycle in this order. The first is the default until you cycle; each action then remembers its last position.</p>
+      <p class="section-help">Checked devices cycle in this order. Drag the grip or use Alt+Arrow to reorder. The first is the default until you cycle.</p>
       <ol id="deviceList" class="device-list" aria-label="Selected device cycle and available devices"></ol>
       <p id="deviceEmpty" class="empty-state">No devices listed yet. Connect a battery device, then refresh.</p>
     </section>

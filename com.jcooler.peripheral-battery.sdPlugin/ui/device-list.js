@@ -11,7 +11,7 @@ const PROVIDER_LABELS = Object.freeze({
  * Creates the single ordered list shown by the Property Inspector.
  * Configured devices remain visible even while absent from discovery.
  */
-export function buildDeviceRows(discoveredDevices, selectedDevices) {
+export function buildDeviceRows(discoveredDevices, selectedDevices, runtimePayload = {}) {
   const selected = uniqueDevices(selectedDevices);
   const selectedKeys = new Set(selected.map((device) => device.key));
   const discovered = uniqueDevices(discoveredDevices, selectedKeys);
@@ -21,14 +21,23 @@ export function buildDeviceRows(discoveredDevices, selectedDevices) {
       device.physicalId ? [device.physicalId] : []
     )
   );
+  const runtime = normalizeRuntimePayload(runtimePayload);
+  const runtimeFields = (device) => ({
+    current: runtime.currentDeviceKey === device.key,
+    runtimeStatus: runtime.statuses.get(device.key) ?? null,
+  });
 
-  const rows = selected.map((savedDevice, index) => ({
-    device: discoveredByKey.get(savedDevice.key) ?? savedDevice,
-    included: true,
-    initial: index === 0,
-    available: discoveredByKey.has(savedDevice.key),
-    order: index,
-  }));
+  const rows = selected.map((savedDevice, index) => {
+    const device = discoveredByKey.get(savedDevice.key) ?? savedDevice;
+    return {
+      device,
+      included: true,
+      initial: index === 0,
+      available: discoveredByKey.has(savedDevice.key),
+      order: index,
+      ...runtimeFields(device),
+    };
+  });
 
   for (const device of discovered) {
     if (selectedKeys.has(device.key)) continue;
@@ -39,6 +48,7 @@ export function buildDeviceRows(discoveredDevices, selectedDevices) {
       initial: false,
       available: true,
       order: null,
+      ...runtimeFields(device),
     });
   }
 
@@ -159,14 +169,16 @@ export function createInspectorController({ send, view }) {
   let context = "";
   let settings = {};
   let discoveredDevices = [];
+  let runtimePayload = {};
   let recoveryMessage = "";
+  let announcementMessage = "";
 
   const selectedDevices = () =>
     selectedDevicesFromSettings(settings, discoveredDevices);
 
   const render = () => {
     view.renderRows(
-      buildDeviceRows(discoveredDevices, selectedDevices()),
+      buildDeviceRows(discoveredDevices, selectedDevices(), runtimePayload),
       settings
     );
   };
@@ -183,18 +195,29 @@ export function createInspectorController({ send, view }) {
   };
 
   const announce = (text) => {
-    recoveryMessage = text;
+    announcementMessage = text;
     view.announce?.(text);
   };
 
   const dismissRecoveryMessage = () => {
     if (!recoveryMessage) return;
     recoveryMessage = "";
+    view.showRecovery?.("");
+  };
+
+  const dismissAnnouncement = () => {
+    if (!announcementMessage) return;
+    announcementMessage = "";
     view.announce?.("");
   };
 
-  const reorder = (key, targetIndex) => {
+  const dismissTransientMessages = () => {
     dismissRecoveryMessage();
+    dismissAnnouncement();
+  };
+
+  const reorder = (key, targetIndex) => {
+    dismissTransientMessages();
     const selected = selectedDevices();
     const reordered = reorderSelectedDevice(selected, key, targetIndex);
     const device = selected.find((entry) => entry.key === key);
@@ -209,9 +232,12 @@ export function createInspectorController({ send, view }) {
 
   return {
     open(connection) {
+      dismissTransientMessages();
       action = connection.action;
       context = connection.context;
       settings = mergeSettings({}, connection.settings);
+      discoveredDevices = [];
+      runtimePayload = {};
       view.applySettings(settings);
       render();
       view.showStatus(describeDiscoveryState({ state: "loading" }));
@@ -219,6 +245,7 @@ export function createInspectorController({ send, view }) {
     },
 
     receiveSettings(nextSettings) {
+      dismissTransientMessages();
       settings = mergeSettings({}, nextSettings);
       view.applySettings(settings);
       render();
@@ -226,14 +253,33 @@ export function createInspectorController({ send, view }) {
 
     receiveDeviceList(payload) {
       view.showStatus(describeDiscoveryState(payload));
+      const recovered = Array.isArray(payload?.notices)
+        ? payload.notices.find(
+            (notice) =>
+              isRecord(notice) &&
+              Object.hasOwn(PROVIDER_LABELS, notice.provider) &&
+              notice.kind === "recovered" &&
+              typeof notice.message === "string" &&
+              notice.message.trim()
+          )
+        : null;
+      if (recovered) {
+        recoveryMessage = recovered.message.trim();
+        view.showRecovery?.(recoveryMessage);
+      }
       if (Array.isArray(payload?.devices)) {
         discoveredDevices = payload.devices;
         render();
       }
     },
 
+    receiveRuntimeStatus(payload) {
+      runtimePayload = payload;
+      render();
+    },
+
     include(device, included) {
-      dismissRecoveryMessage();
+      dismissTransientMessages();
       persist({
         schemaVersion: 2,
         selectedDevices: setDeviceIncluded(
@@ -256,12 +302,12 @@ export function createInspectorController({ send, view }) {
     },
 
     changeSettings(patch) {
-      dismissRecoveryMessage();
+      dismissTransientMessages();
       persist(patch);
     },
 
     refresh() {
-      dismissRecoveryMessage();
+      dismissTransientMessages();
       view.showStatus(describeDiscoveryState({ state: "loading" }));
       sendPluginEvent("refreshDevices");
     },
@@ -349,6 +395,16 @@ export function describeDiscoveryState(payload) {
       text: "No battery devices found. Refresh after connecting a device.",
     };
   }
+  if (state === "partial") {
+    const count = Array.isArray(payload.devices) ? payload.devices.length : 0;
+    return {
+      tone: "partial",
+      text:
+        typeof payload.message === "string" && payload.message.trim()
+          ? payload.message.trim()
+          : `${count} device${count === 1 ? "" : "s"} found; some providers failed`,
+    };
+  }
   return {
     tone: "error",
     text:
@@ -369,7 +425,7 @@ export function renderDeviceList(container, rows, handlers) {
     const item = document.createElement("li");
     item.className = `device-row${row.available ? "" : " device-row-missing"}${
       row.included ? " device-row-selected" : ""
-    }`;
+    }${row.current ? " device-row-current" : ""}`;
 
     const line = document.createElement("div");
     line.className = "device-line";
@@ -389,7 +445,26 @@ export function renderDeviceList(container, rows, handlers) {
     provider.textContent = row.device.providerLabel;
     metadata.append(provider);
 
-    if (!row.available) {
+    if (row.current) {
+      const current = document.createElement("span");
+      current.className = "current-label";
+      current.textContent = "Current";
+      metadata.append(current);
+    }
+
+    if (row.runtimeStatus) {
+      const connection = document.createElement("span");
+      connection.className = `connection-label connection-${row.runtimeStatus.state}`;
+      connection.textContent = connectionLabel(row.runtimeStatus.state);
+      metadata.append(connection);
+
+      if (row.runtimeStatus.batteryText !== connection.textContent) {
+        const battery = document.createElement("span");
+        battery.className = "battery-value";
+        battery.textContent = row.runtimeStatus.batteryText;
+        metadata.append(battery);
+      }
+    } else if (!row.available) {
       const unavailable = document.createElement("span");
       unavailable.className = "availability-label";
       unavailable.textContent = "Unavailable";
@@ -468,6 +543,44 @@ export function renderDeviceList(container, rows, handlers) {
   container.replaceChildren(...items);
 }
 
+export function renderInspectorStatus(statusElement, refreshElement, status) {
+  statusElement.className = `status-bar status-${status.tone}`;
+  statusElement.textContent = status.text;
+  const loading = status.tone === "loading";
+  refreshElement.disabled = loading;
+  refreshElement.setAttribute("aria-busy", String(loading));
+}
+
+export function renderInspectorAnnouncement(element, text) {
+  element.textContent = text;
+}
+
+export function renderInspectorRecovery(element, text) {
+  element.textContent = text;
+  element.hidden = !text;
+}
+
+export function routeInspectorMessage(controller, message) {
+  if (!isRecord(message)) return false;
+  if (message.event === "sendToPropertyInspector" && isRecord(message.payload)) {
+    if (message.payload.event === "deviceList") {
+      controller.receiveDeviceList(message.payload);
+      return true;
+    }
+    if (message.payload.event === "deviceRuntimeStatus") {
+      controller.receiveRuntimeStatus(message.payload);
+      return true;
+    }
+  }
+  if (message.event === "didReceiveSettings") {
+    controller.receiveSettings(
+      isRecord(message.payload?.settings) ? message.payload.settings : {}
+    );
+    return true;
+  }
+  return false;
+}
+
 export function normalizeDevice(value) {
   if (!isRecord(value) || !Object.hasOwn(PROVIDER_LABELS, value.provider)) {
     return null;
@@ -523,6 +636,40 @@ function uniqueDevices(values, preferredKeys = new Set()) {
   return devices;
 }
 
+function normalizeRuntimePayload(payload) {
+  const statuses = new Map();
+  if (Array.isArray(payload?.statuses)) {
+    for (const value of payload.statuses) {
+      if (
+        !isRecord(value) ||
+        typeof value.deviceKey !== "string" ||
+        !value.deviceKey ||
+        !["connected", "disconnected", "unavailable"].includes(value.state) ||
+        typeof value.batteryText !== "string"
+      ) {
+        continue;
+      }
+      statuses.set(value.deviceKey, {
+        state: value.state,
+        batteryText: value.batteryText,
+      });
+    }
+  }
+  return {
+    currentDeviceKey:
+      typeof payload?.currentDeviceKey === "string"
+        ? payload.currentDeviceKey
+        : null,
+    statuses,
+  };
+}
+
+function connectionLabel(state) {
+  if (state === "connected") return "Connected";
+  if (state === "disconnected") return "Disconnected";
+  return "Unavailable";
+}
+
 function isRecord(value) {
   return typeof value === "object" && value !== null;
 }
@@ -530,6 +677,8 @@ function isRecord(value) {
 function installPropertyInspector(window, document) {
   const elements = {
     status: document.getElementById("status"),
+    recovery: document.getElementById("recoveryNotice"),
+    announcement: document.getElementById("reorderAnnouncement"),
     refresh: document.getElementById("refreshBtn"),
     list: document.getElementById("deviceList"),
     empty: document.getElementById("deviceEmpty"),
@@ -568,15 +717,15 @@ function installPropertyInspector(window, document) {
     },
 
     showStatus(status) {
-      elements.status.className = `status-bar status-${status.tone}`;
-      elements.status.textContent = status.text;
-      const loading = status.tone === "loading";
-      elements.refresh.disabled = loading;
-      elements.refresh.setAttribute("aria-busy", String(loading));
+      renderInspectorStatus(elements.status, elements.refresh, status);
+    },
+
+    showRecovery(text) {
+      renderInspectorRecovery(elements.recovery, text);
     },
 
     announce(text) {
-      elements.status.textContent = text;
+      renderInspectorAnnouncement(elements.announcement, text);
     },
   };
 
@@ -642,18 +791,7 @@ function installPropertyInspector(window, document) {
 
     websocket.addEventListener("message", (event) => {
       const message = parseJson(event.data, null);
-      if (!isRecord(message)) return;
-      if (
-        message.event === "sendToPropertyInspector" &&
-        isRecord(message.payload) &&
-        message.payload.event === "deviceList"
-      ) {
-        controller.receiveDeviceList(message.payload);
-      } else if (message.event === "didReceiveSettings") {
-        controller.receiveSettings(
-          isRecord(message.payload?.settings) ? message.payload.settings : {}
-        );
-      }
+      routeInspectorMessage(controller, message);
     });
 
     websocket.addEventListener("close", () => {

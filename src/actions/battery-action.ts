@@ -9,7 +9,11 @@ import streamDeck, {
 import type { JsonObject, JsonValue } from "@elgato/utils";
 
 import { DeviceCatalog } from "../devices/catalog";
-import type { DeviceDescriptor, DiscoveryResult } from "../devices/types";
+import type {
+  BatteryStatus,
+  DeviceDescriptor,
+  DiscoveryResult,
+} from "../devices/types";
 import type { BatteryInfo } from "../types";
 import {
   generateBatteryIcon,
@@ -77,10 +81,22 @@ export interface BatteryActionOptions {
   inspector?: InspectorMessenger<JsonObject>;
 }
 
+interface RuntimeStatusSummary {
+  deviceKey: string;
+  state: "connected" | "disconnected" | "unavailable";
+  batteryText: string;
+}
+
+interface ContextRuntimeSummary {
+  currentDeviceKey: string | null;
+  statuses: Map<string, RuntimeStatusSummary>;
+}
+
 export class BatteryAction extends SingletonAction<BatteryActionSettings> {
   private readonly handles = new Map<string, ActionHandle>();
   private readonly runtime: BatteryActionRuntime;
   private readonly inspector: InspectorMessenger<JsonObject>;
+  private readonly runtimeSummaries = new Map<string, ContextRuntimeSummary>();
 
   constructor(options: BatteryActionOptions = {}) {
     super();
@@ -168,6 +184,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
   ): Promise<void> {
     this.runtime.disappear(ev.action.id);
     this.handles.delete(ev.action.id);
+    this.runtimeSummaries.delete(ev.action.id);
   }
 
   override async onKeyDown(
@@ -235,6 +252,7 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       event: "deviceList",
       state: "loading",
     });
+    await this.sendCachedRuntimeSummary(contextId);
     try {
       const result = await this.runtime.refreshDevices(
         payload.event === "refreshDevices"
@@ -267,12 +285,18 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       await handle.setImage(
         generateLoadingIcon(render.settings.backgroundColor, indicator)
       );
+      await this.sendRuntimeSummary(contextId, render.device.key);
       return;
     }
     if (render.kind === "empty") {
       await handle.setImage(
         generateErrorIcon("Select Device", render.settings.backgroundColor)
       );
+      this.runtimeSummaries.set(contextId, {
+        currentDeviceKey: null,
+        statuses: new Map(),
+      });
+      await this.sendCachedRuntimeSummary(contextId);
       return;
     }
 
@@ -289,6 +313,8 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       await handle.setImage(
         generateErrorIcon(message, render.settings.backgroundColor, indicator)
       );
+      this.cacheRuntimeStatus(contextId, device.key, status);
+      await this.sendCachedRuntimeSummary(contextId);
       return;
     }
 
@@ -305,6 +331,8 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
           indicator
         )
       );
+      this.cacheRuntimeStatus(contextId, device.key, status);
+      await this.sendCachedRuntimeSummary(contextId);
       return;
     }
 
@@ -318,8 +346,74 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       providerLabel: status.providerLabel,
     };
     await handle.setImage(generateBatteryIcon(info, options, indicator));
+    this.cacheRuntimeStatus(contextId, device.key, status);
+    await this.sendCachedRuntimeSummary(contextId);
   }
 
+  private cacheRuntimeStatus(
+    contextId: string,
+    currentDeviceKey: string,
+    status: BatteryStatus
+  ): void {
+    const summary = this.runtimeSummaries.get(contextId) ?? {
+      currentDeviceKey,
+      statuses: new Map<string, RuntimeStatusSummary>(),
+    };
+    summary.currentDeviceKey = currentDeviceKey;
+    summary.statuses.set(currentDeviceKey, sanitizeRuntimeStatus(currentDeviceKey, status));
+    this.runtimeSummaries.set(contextId, summary);
+  }
+
+  private async sendRuntimeSummary(
+    contextId: string,
+    currentDeviceKey: string
+  ): Promise<void> {
+    const summary = this.runtimeSummaries.get(contextId) ?? {
+      currentDeviceKey,
+      statuses: new Map<string, RuntimeStatusSummary>(),
+    };
+    summary.currentDeviceKey = currentDeviceKey;
+    this.runtimeSummaries.set(contextId, summary);
+    await this.sendCachedRuntimeSummary(contextId);
+  }
+
+  private async sendCachedRuntimeSummary(contextId: string): Promise<void> {
+    const summary = this.runtimeSummaries.get(contextId);
+    if (!summary) return;
+    await this.inspector.send(contextId, {
+      event: "deviceRuntimeStatus",
+      currentDeviceKey: summary.currentDeviceKey,
+      statuses: [...summary.statuses.values()].map((status) => ({ ...status })),
+    });
+  }
+
+}
+
+function sanitizeRuntimeStatus(
+  deviceKey: string,
+  status: BatteryStatus
+): RuntimeStatusSummary {
+  if (status.state === "disconnected") {
+    return { deviceKey, state: "disconnected", batteryText: "Disconnected" };
+  }
+  if (status.state === "unavailable" || status.level.kind === "unavailable") {
+    return { deviceKey, state: "unavailable", batteryText: "Unavailable" };
+  }
+  if (status.level.kind === "percentage") {
+    const percentage = Math.round(Math.max(0, Math.min(100, status.level.value)));
+    return { deviceKey, state: "connected", batteryText: `${percentage}%` };
+  }
+  const qualitativeLabels = {
+    empty: "Empty",
+    low: "Low",
+    medium: "Medium",
+    full: "Full",
+  } as const;
+  return {
+    deviceKey,
+    state: "connected",
+    batteryText: qualitativeLabels[status.level.value],
+  };
 }
 
 function iconOptions(settings: NormalizedBatterySettings): IconOptions {
