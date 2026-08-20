@@ -108,7 +108,7 @@ export class ActionSession {
       (device) => device.key === oldActive
     )
       ? oldActive
-      : next.selectedDevices[0].key;
+      : next.activeDeviceKey ?? next.selectedDevices[0].key;
 
     if (this.activeDeviceKey !== oldActive) {
       this.requestRefresh(true);

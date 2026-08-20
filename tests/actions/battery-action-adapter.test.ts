@@ -147,6 +147,83 @@ describe("BatteryAction Stream Deck adapter", () => {
     expect(fakeRuntime.manualRefresh).toHaveBeenCalledTimes(1);
   });
 
+  it("retains a migrated middle Logitech position in the real runtime without a second settings write", async () => {
+    const before = windowsKeyboard();
+    const legacyNativeId = "session:dev00000006";
+    const legacy: DeviceRef = {
+      key: makeDeviceKey("logitech", legacyNativeId),
+      provider: "logitech",
+      providerLabel: "Logitech G Hub",
+      nativeId: legacyNativeId,
+      name: "G502 X Plus",
+      deviceType: "Mouse",
+    };
+    const canonical: DeviceDescriptor = {
+      key: makeDeviceKey("logitech", "model:g502 x plus|mouse"),
+      provider: "logitech",
+      providerLabel: "Logitech G Hub",
+      nativeId: "model:g502 x plus|mouse",
+      name: "G502 X Plus",
+      deviceType: "Mouse",
+      physicalId: "logitech-model:model:g502 x plus|mouse",
+      transientNativeIds: [legacyNativeId],
+    };
+    const after: DeviceRef = {
+      key: makeDeviceKey("xinput", "slot:0"),
+      provider: "xinput",
+      providerLabel: "XInput",
+      nativeId: "slot:0",
+      name: "Controller 1",
+      deviceType: "Controller",
+    };
+    const saved = {
+      schemaVersion: 2,
+      selectedDevices: [before, legacy, after],
+      activeDeviceKey: legacy.key,
+    };
+    const discovery: DiscoveryResult = {
+      devices: [before, canonical, after],
+      errors: [],
+      notices: [],
+      refreshedAt: 1,
+    };
+    const catalog = {
+      discover: vi.fn(async () => discovery),
+      invalidateDiscovery: vi.fn(),
+      readStatus: vi.fn(async (device: DeviceRef): Promise<BatteryStatus> => ({
+        state: "connected",
+        level: { kind: "percentage", value: 75 },
+        charging: false,
+        provider: device.provider,
+        providerLabel: device.providerLabel,
+        observedAt: 1,
+      })),
+    } as unknown as DeviceCatalog;
+    const realRuntime = new BatteryRuntime(catalog, vi.fn());
+    const handle = actionHandle(saved);
+    const action = new BatteryAction({ runtime: realRuntime });
+
+    try {
+      await action.onWillAppear({
+        action: handle,
+        payload: { settings: saved },
+      } as never);
+      const migrated = vi.mocked(handle.setSettings).mock.calls[0]?.[0];
+      expect(migrated?.activeDeviceKey).toBe(canonical.key);
+
+      await action.onDidReceiveSettings({
+        action: handle,
+        payload: { settings: migrated },
+      } as never);
+
+      expect(realRuntime.activeKey("context-1")).toBe(canonical.key);
+      expect(handle.setSettings).toHaveBeenCalledTimes(1);
+    } finally {
+      await action.onWillDisappear({ action: handle } as never);
+      realRuntime.destroy();
+    }
+  });
+
   it.each([
     {
       label: "unresolved",

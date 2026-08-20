@@ -113,6 +113,41 @@ describe("ordered device cycle", () => {
     expect(session.activeKey).toBe(c.key);
   });
 
+  it("adopts the incoming active key when the current selection is replaced", async () => {
+    const before = ref("before");
+    const legacy = ref("legacy-session");
+    const canonical = ref("canonical-device");
+    const after = ref("after");
+    const { session } = setup();
+    session.appear(settings([before, legacy, after], {
+      activeDeviceKey: legacy.key,
+    }));
+    await vi.waitFor(() => expect(session.activeKey).toBe(legacy.key));
+
+    session.updateSettings(settings([before, canonical, after], {
+      activeDeviceKey: canonical.key,
+    }));
+
+    expect(session.activeKey).toBe(canonical.key);
+  });
+
+  it("ignores an incoming active key while the current selection remains", async () => {
+    const before = ref("before");
+    const current = ref("current");
+    const requested = ref("requested");
+    const { session } = setup();
+    session.appear(settings([before, current, requested], {
+      activeDeviceKey: current.key,
+    }));
+    await vi.waitFor(() => expect(session.activeKey).toBe(current.key));
+
+    session.updateSettings(settings([before, current, requested], {
+      activeDeviceKey: requested.key,
+    }));
+
+    expect(session.activeKey).toBe(current.key);
+  });
+
   it("restores the persisted active device when an action session is recreated", async () => {
     const apex = ref("Apex");
     const mxKeys = ref("MX Keys");
