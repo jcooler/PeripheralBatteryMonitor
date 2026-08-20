@@ -112,20 +112,95 @@ describe("Logitech G Hub provider", () => {
 
     expect(devices).toEqual([
       expect.objectContaining({
-        key: "logitech:serial%3AMX-SERIAL-1",
-        nativeId: "serial:MX-SERIAL-1",
+        key: "logitech:serial%3Amx-serial-1",
+        nativeId: "serial:mx-serial-1",
         providerLabel: "Logitech G Hub",
         name: "G Pro Wireless",
-        physicalId: "serial:MX-SERIAL-1",
+        physicalId: "serial:mx-serial-1",
       }),
       expect.objectContaining({
-        key: "logitech:session%3Adev-session-only",
-        nativeId: "session:dev-session-only",
+        key: "logitech:model%3Ag915%7Ckeyboard",
+        nativeId: "model:g915|keyboard",
         providerLabel: "Logitech G Hub",
+        physicalId: "logitech-model:model:g915|keyboard",
       }),
     ]);
     expect(sockets[0].sent.map((message) => message.path)).toEqual([
       "/devices/list",
+    ]);
+  });
+
+  it("keeps MX Keys and G502 X Plus identities while a refreshed G502 endpoint changes", async () => {
+    let reportedDevices = [
+      {
+        id: "dev-mx-keys-06",
+        serialNumber: " MX-KEYS-SERIAL ",
+        extendedDisplayName: "MX Keys",
+        deviceType: "keyboard",
+        capabilities: { hasBatteryStatus: true },
+      },
+      {
+        id: "dev00000006",
+        extendedDisplayName: "G502 X Plus",
+        deviceType: "mouse",
+        capabilities: { hasBatteryStatus: true },
+      },
+    ];
+    const sockets: FakeSocket[] = [];
+    const client = new LogitechClient({
+      createSocket: () => {
+        const socket = new FakeSocket();
+        socket.responder = (message) => {
+          const payload =
+            message.path === "/devices/list"
+              ? { deviceInfos: reportedDevices }
+              : { percentage: 65, charging: false };
+          queueMicrotask(() =>
+            socket.emit(
+              "message",
+              Buffer.from(JSON.stringify({ msgId: message.msgId, payload }))
+            )
+          );
+        };
+        sockets.push(socket);
+        queueMicrotask(() => socket.emit("open"));
+        return socket;
+      },
+      now: () => 12_345,
+      requestTimeoutMs: 100,
+      connectTimeoutMs: 100,
+    });
+
+    const initial = await client.discover();
+    const initialMxKeys = initial.find((device) => device.name === "MX Keys");
+    const initialG502 = initial.find((device) => device.name === "G502 X Plus");
+    expect(initialMxKeys?.nativeId).toBe("serial:mx-keys-serial");
+    expect(initialG502?.nativeId).toBe("model:g502 x plus|mouse");
+    await client.readStatus(initialG502!);
+
+    reportedDevices = [
+      {
+        ...reportedDevices[0],
+        id: "dev-mx-keys-01",
+      },
+      {
+        ...reportedDevices[1],
+        id: "dev00000001",
+      },
+    ];
+    client.invalidateDiscovery("G Hub refreshed its endpoint ids");
+    const refreshed = await client.discover();
+    const refreshedMxKeys = refreshed.find((device) => device.name === "MX Keys");
+    const refreshedG502 = refreshed.find((device) => device.name === "G502 X Plus");
+
+    expect(refreshedMxKeys?.nativeId).toBe(initialMxKeys?.nativeId);
+    expect(refreshedG502?.nativeId).toBe(initialG502?.nativeId);
+    await client.readStatus(refreshedG502!);
+    expect(sockets[0].sent.map((message) => message.path)).toEqual([
+      "/devices/list",
+      "/battery/dev00000006/state",
+      "/devices/list",
+      "/battery/dev00000001/state",
     ]);
   });
 
@@ -165,6 +240,43 @@ describe("Logitech G Hub provider", () => {
       detail: "Logitech device not found; refresh discovery",
     });
     expect(sockets[0].sent).toHaveLength(1);
+  });
+
+  it("returns unavailable legacy data when the compatibility endpoint is not a current identity candidate", async () => {
+    const { client, sockets } = setup();
+    await client.discover();
+
+    await expect(
+      client.getBatteryInfo({
+        id: "untracked-endpoint",
+        extendedDisplayName: "G915",
+        deviceType: "keyboard",
+        capabilities: { hasBatteryStatus: true },
+      })
+    ).resolves.toMatchObject({
+      deviceName: "G915",
+      deviceType: "Keyboard",
+      batteryLevel: -1,
+      isCharging: false,
+      isConnected: false,
+    });
+    expect(sockets[0].sent.map((message) => message.path)).toEqual([
+      "/devices/list",
+    ]);
+  });
+
+  it("reads battery data through a current compatibility identity candidate", async () => {
+    const { client } = setup();
+    const devices = await client.getDevices();
+    const mouse = devices.find((device) => device.extendedDisplayName === "G Pro Wireless");
+
+    await expect(client.getBatteryInfo(mouse!)).resolves.toMatchObject({
+      deviceName: "G Pro Wireless",
+      deviceType: "Mouse",
+      batteryLevel: 72,
+      isCharging: false,
+      isConnected: true,
+    });
   });
 
   it("rejects pending requests on close and never returns cached battery as live", async () => {

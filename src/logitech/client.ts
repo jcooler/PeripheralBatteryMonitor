@@ -9,6 +9,11 @@ import {
   type DeviceRef,
 } from "../devices/types";
 import type { BatteryInfo } from "../types";
+import {
+  identifyLogitechDevices,
+  mapLogitechDeviceType,
+  type LogitechIdentityCandidate,
+} from "./identity";
 
 const PROVIDER_ID = "logitech" as const;
 const PROVIDER_LABEL = "Logitech G Hub";
@@ -207,13 +212,17 @@ export class LogitechClient implements DeviceProvider {
     }
   }
 
-  /** Compatibility wrapper; resolves only the exact endpoint identity. */
+  /** Compatibility wrapper; resolves only a current persistent identity. */
   async getBatteryInfo(device: GHubDevice): Promise<BatteryInfo> {
-    const nativeId = nativeIdentity(device);
-    const ref = toDescriptor(device, nativeId);
+    const candidate = identifyLogitechDevices([...this.endpoints.values()]).candidates.find(
+      ({ device: endpoint }) => endpoint === device
+    );
+    if (!candidate) return unavailableLegacyBattery(device);
+
+    const ref = toDescriptor(candidate);
     const status = await this.readStatus(ref);
     return {
-      deviceId: hashString(nativeId),
+      deviceId: hashString(ref.nativeId),
       deviceName: ref.name,
       deviceType: ref.deviceType,
       batteryLevel:
@@ -321,24 +330,21 @@ export class LogitechClient implements DeviceProvider {
       throw new Error("Logitech G Hub returned an invalid device list");
     }
 
-    const groups = new Map<string, GHubDevice[]>();
-    for (const value of rawDevices) {
-      if (!isGHubDevice(value) || value.capabilities?.hasBatteryStatus !== true) {
-        continue;
-      }
-      const nativeId = nativeIdentity(value);
-      const group = groups.get(nativeId) ?? [];
-      group.push(value);
-      groups.set(nativeId, group);
+    const identities = identifyLogitechDevices(rawDevices.filter(isGHubDevice));
+    const identityCounts = new Map<string, number>();
+    for (const candidate of identities.candidates) {
+      identityCounts.set(
+        candidate.nativeId,
+        (identityCounts.get(candidate.nativeId) ?? 0) + 1
+      );
     }
 
     const endpoints = new Map<string, GHubDevice>();
     const descriptors: DeviceDescriptor[] = [];
-    for (const [nativeId, devices] of groups) {
-      if (devices.length !== 1) continue;
-      const device = devices[0];
-      endpoints.set(nativeId, device);
-      descriptors.push(toDescriptor(device, nativeId));
+    for (const candidate of identities.candidates) {
+      if (identityCounts.get(candidate.nativeId) !== 1) continue;
+      endpoints.set(candidate.nativeId, candidate.device);
+      descriptors.push(toDescriptor(candidate));
     }
     if (generation !== this.discoveryGeneration || this.destroyed) {
       throw new Error("Logitech discovery generation changed");
@@ -497,40 +503,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function serialIdentity(device: GHubDevice): string | null {
-  const value =
-    device.serialNumber ?? device.serial ?? device.deviceSerialNumber;
-  if (typeof value !== "string" || !value.trim()) return null;
-  return value.trim().toUpperCase();
-}
-
-function nativeIdentity(device: GHubDevice): string {
-  const serial = serialIdentity(device);
-  return serial ? `serial:${serial}` : `session:${device.id}`;
-}
-
 function toDescriptor(
-  device: GHubDevice,
-  nativeId: string
+  candidate: LogitechIdentityCandidate
 ): DeviceDescriptor {
-  const serial = serialIdentity(device);
+  const { device, nativeId, physicalId } = candidate;
   return {
     key: makeDeviceKey(PROVIDER_ID, nativeId),
     provider: PROVIDER_ID,
     providerLabel: PROVIDER_LABEL,
     nativeId,
     name: device.extendedDisplayName?.trim() || "Logitech device",
-    deviceType: mapDeviceType(device.deviceType),
-    ...(serial ? { physicalId: `serial:${serial}` } : {}),
+    deviceType: mapLogitechDeviceType(device.deviceType),
+    ...(physicalId ? { physicalId } : {}),
   };
 }
 
-function mapDeviceType(type: string | undefined): string {
-  const value = type?.toLowerCase() ?? "";
-  if (value.includes("mouse")) return "Mouse";
-  if (value.includes("keyboard")) return "Keyboard";
-  if (value.includes("headset")) return "Headset";
-  return type?.trim() || "Device";
+function unavailableLegacyBattery(device: GHubDevice): BatteryInfo {
+  return {
+    deviceId: hashString(device.id),
+    deviceName: device.extendedDisplayName?.trim() || "Logitech device",
+    deviceType: mapLogitechDeviceType(device.deviceType),
+    batteryLevel: -1,
+    isCharging: false,
+    isConnected: false,
+  };
 }
 
 function isPercentage(value: unknown): value is number {
