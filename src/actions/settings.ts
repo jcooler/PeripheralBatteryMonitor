@@ -143,8 +143,7 @@ export function prepareMigratedDevices(
     if (canonical) {
       if (
         device.provider === "steelseries" &&
-        device.deviceType === "Device" &&
-        device.name !== canonical.name
+        !matchesSteelSeriesMetadata(device, canonical)
       ) {
         safeToPersist = false;
         return device;
@@ -185,6 +184,16 @@ export function prepareMigratedDevices(
     safeToPersist,
     changed,
   };
+}
+
+function matchesSteelSeriesMetadata(
+  saved: DeviceRef,
+  discovered: DeviceDescriptor
+): boolean {
+  return (
+    saved.name === discovered.name &&
+    (saved.deviceType === discovered.deviceType || saved.deviceType === "Device")
+  );
 }
 
 function findExactLegacyLogitechMatch(

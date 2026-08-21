@@ -60,6 +60,27 @@ export interface ProviderDiscoveryError {
   message: string;
 }
 
+const TRUSTED_PROVIDER_LABELS: Record<ProviderId, string> = {
+  steelseries: "SteelSeries GG",
+  logitech: "Logitech G Hub",
+  xinput: "XInput",
+  windows: "Windows Bluetooth",
+  "windows-gamepad": "Windows Gamepad",
+  hid: "HID",
+};
+
+/** Fixed discovery category for Inspector-safe provider failures. */
+export function safeProviderDiscoveryError(
+  provider: ProviderId
+): ProviderDiscoveryError {
+  const providerLabel = TRUSTED_PROVIDER_LABELS[provider];
+  return {
+    provider,
+    providerLabel,
+    message: `${providerLabel} unavailable`,
+  };
+}
+
 export interface DiscoveryResult {
   devices: DeviceDescriptor[];
   errors: ProviderDiscoveryError[];

@@ -9,10 +9,11 @@ import streamDeck, {
 import type { JsonObject, JsonValue } from "@elgato/utils";
 
 import { DeviceCatalog } from "../devices/catalog";
-import type {
-  BatteryStatus,
-  DeviceDescriptor,
-  DiscoveryResult,
+import {
+  safeProviderDiscoveryError,
+  type BatteryStatus,
+  type DeviceDescriptor,
+  type DiscoveryResult,
 } from "../devices/types";
 import type { BatteryInfo } from "../types";
 import {
@@ -260,11 +261,11 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
         payload.event === "refreshDevices"
       );
       await this.inspector.send(contextId, discoveryMessage(result));
-    } catch (error) {
+    } catch {
       await this.inspector.send(contextId, {
         event: "deviceList",
         state: "error",
-        message: errorMessage(error),
+        message: "Device discovery failed",
         devices: [],
         errors: [],
       });
@@ -473,7 +474,9 @@ function discoveryMessage(result: DiscoveryResult): JsonObject {
           ? "No battery devices found"
           : "Device discovery failed",
     devices: result.devices.map(toInspectorDevice),
-    errors: result.errors.map((error) => ({ ...error })),
+    errors: result.errors.map((error) => ({
+      ...safeProviderDiscoveryError(error.provider),
+    })),
     notices: (result.notices ?? []).map((notice) => ({ ...notice })),
     refreshedAt: result.refreshedAt,
   };

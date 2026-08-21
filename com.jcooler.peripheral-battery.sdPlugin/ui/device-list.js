@@ -29,21 +29,27 @@ export function buildDeviceRows(discoveredDevices, selectedDevices, runtimePaylo
     current: runtime.currentDeviceKey === device.key,
     runtimeStatus: runtime.statuses.get(device.key) ?? null,
   });
+  const matchedSelectedKeys = new Set();
 
   const rows = selected.map((savedDevice, index) => {
-    const device = discoveredByKey.get(savedDevice.key) ?? savedDevice;
+    const discoveredDevice = discoveredByKey.get(savedDevice.key);
+    const matched =
+      discoveredDevice &&
+      matchesSavedDeviceMetadata(savedDevice, discoveredDevice);
+    if (matched) matchedSelectedKeys.add(savedDevice.key);
+    const device = matched ? discoveredDevice : savedDevice;
     return {
       device,
       included: true,
       initial: index === 0,
-      available: discoveredByKey.has(savedDevice.key),
+      available: Boolean(matched),
       order: index,
       ...runtimeFields(device),
     };
   });
 
   for (const device of discovered) {
-    if (selectedKeys.has(device.key)) continue;
+    if (matchedSelectedKeys.has(device.key)) continue;
     if (device.physicalId && selectedPhysicalIds.has(device.physicalId)) continue;
     rows.push({
       device,
@@ -73,14 +79,21 @@ export function selectedDevicesFromSettings(settings, discoveredDevices = []) {
     const current = discoveredByKey.get(saved.key);
     if (!current) return saved;
     if (
-      !hasOrderedList &&
       saved.provider === "steelseries" &&
-      saved.name !== current.name
+      !matchesSavedDeviceMetadata(saved, current)
     ) {
       return saved;
     }
     return current;
   });
+}
+
+function matchesSavedDeviceMetadata(saved, discovered) {
+  if (saved.provider !== "steelseries") return true;
+  return (
+    saved.name === discovered.name &&
+    (saved.deviceType === discovered.deviceType || saved.deviceType === "Device")
+  );
 }
 
 export function setDeviceIncluded(selectedDevices, candidate, included) {
@@ -474,9 +487,24 @@ export function renderDeviceList(container, rows, handlers) {
       metadata.append(unavailable);
     }
 
-    identity.append(name, metadata);
-
     if (row.included) {
+      const summary = document.createElement("div");
+      summary.className = "device-summary";
+      summary.append(name, metadata);
+
+      const remove = document.createElement("button");
+      remove.className = "remove-device";
+      remove.type = "button";
+      remove.textContent = "Remove";
+      remove.setAttribute(
+        "aria-label",
+        `Remove ${row.device.name} from cycle`
+      );
+      remove.addEventListener("click", () => {
+        handlers.onIncluded(row.device, false);
+      });
+      identity.append(summary, remove);
+
       const position = document.createElement("span");
       position.className = "cycle-position";
       position.textContent = String((row.order ?? 0) + 1);
@@ -601,10 +629,15 @@ export function renderDeviceList(container, rows, handlers) {
         if (nextIndex < 0 || nextIndex >= selectedCount) return;
         event.preventDefault();
         handlers.onReorder(row.device.key, nextIndex);
+        const movedRow = [...container.children]
+          .filter((candidate) => candidate.matches?.(".device-row-selected"))
+          [nextIndex];
+        movedRow?.focus?.();
       });
       line.append(position, identity, grip);
       item.append(line);
     } else {
+      identity.append(name, metadata);
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.id = `include-device-${index}`;

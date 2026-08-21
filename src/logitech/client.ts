@@ -147,7 +147,7 @@ export class LogitechClient implements DeviceProvider {
   }
 
   discoveryNotices(): readonly ProviderNotice[] {
-    return Object.freeze([...this.notices]);
+    return freezeNoticeSnapshot(this.notices);
   }
 
   async readStatus(
@@ -420,7 +420,7 @@ export class LogitechClient implements DeviceProvider {
     }
     this.endpoints = endpoints;
     this.endpointHistory = endpointHistory;
-    this.notices = Object.freeze([...notices]);
+    this.notices = freezeNoticeSnapshot(notices);
     this.hasDiscovered = true;
     this.discoveryRetryAttempt = 0;
     this.clearDiscoveryRetryTimer();
@@ -635,6 +635,14 @@ const NOOP_DIAGNOSTIC_SINK: LogitechDiagnosticSink = {
   info: () => undefined,
   warn: () => undefined,
 };
+
+function freezeNoticeSnapshot(
+  notices: readonly ProviderNotice[]
+): readonly ProviderNotice[] {
+  return Object.freeze(
+    notices.map((notice) => Object.freeze({ ...notice }))
+  );
+}
 
 function isGHubDevice(value: unknown): value is GHubDevice {
   if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) {

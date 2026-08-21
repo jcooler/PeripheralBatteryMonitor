@@ -68,9 +68,77 @@ describe("Property Inspector browser layout", () => {
     }
   });
 
+  it.each([250, 280, 360])("keeps selected-row controls contained and error-free at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(
+      browser,
+      origin,
+      fixture,
+      900,
+      width
+    );
+    try {
+      const layout = await page.evaluate(() => {
+        const selectedRows = [...document.querySelectorAll<HTMLElement>(
+          ".device-row-selected"
+        )];
+        const ids = [...document.querySelectorAll<HTMLElement>("[id]")].map(
+          (element) => element.id
+        );
+        return {
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+          structures: selectedRows.map((row) =>
+            [...row.querySelector(".device-line")!.children].map(
+              (child) => (child as HTMLElement).className
+            )
+          ),
+          separated: selectedRows.every((row) => {
+            const position = row.querySelector<HTMLElement>(".cycle-position")!
+              .getBoundingClientRect();
+            const identity = row.querySelector<HTMLElement>(".device-identity")!
+              .getBoundingClientRect();
+            const grip = row.querySelector<HTMLElement>(".drag-grip")!
+              .getBoundingClientRect();
+            const remove = row.querySelector<HTMLElement>(".remove-device")!
+              .getBoundingClientRect();
+            return (
+              position.left >= 0 &&
+              position.right <= identity.left &&
+              identity.right <= grip.left &&
+              grip.right <= document.documentElement.clientWidth &&
+              remove.left >= identity.left &&
+              remove.right <= identity.right &&
+              remove.height >= 28
+            );
+          }),
+          duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
+          injectedElements: document.querySelectorAll(
+            ".device-list img, .device-list svg, .status-bar script"
+          ).length,
+          fixturePwned: Boolean((globalThis as any).fixturePwned),
+        };
+      });
+
+      expect(layout.scrollWidth).toBe(layout.clientWidth);
+      expect(layout.structures).toEqual([
+        ["cycle-position", "device-identity", "drag-grip"],
+        ["cycle-position", "device-identity", "drag-grip"],
+        ["cycle-position", "device-identity", "drag-grip"],
+      ]);
+      expect(layout.separated).toBe(true);
+      expect(layout.duplicateIds).toEqual([]);
+      expect(layout.injectedElements).toBe(0);
+      expect(layout.fixturePwned).toBe(false);
+      expect(browserErrors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
   it("long-press touch drag reorders, renumbers, and persists at 250px", async () => {
     const { context, page } = await openFixturePage(browser, origin, fixture);
     try {
+      await page.locator("#refreshBtn").focus();
       const firstGrip = await centerOf(page.locator(".drag-grip").nth(0));
       const thirdRow = await centerOf(page.locator(".device-row-selected").nth(2));
 
@@ -94,13 +162,132 @@ describe("Property Inspector browser layout", () => {
       expect(numbers).toEqual(["1", "2", "3"]);
       expect(persisted).toHaveLength(1);
       expect(persisted[0].payload.selectedDevices.map((device: any) => device.nativeId)).toEqual([
-        "model:046d:b35b:mx-keys",
+        "model:mx keys s wireless illuminated keyboard with a deliberately long display name|keyboard",
         "404",
         "serial:G502X-PLUS-001",
       ]);
       await expect.poll(() => page.locator("#reorderAnnouncement").textContent()).toBe(
         "Moved G502 X Plus to position 3 of 3"
       );
+      expect(await page.evaluate(() =>
+        document.activeElement?.classList.contains("device-row-selected") ?? false
+      )).toBe(false);
+    } finally {
+      await context.close();
+    }
+  }, 15_000);
+
+  it("removes ordinary, active, and missing selected rows through keyboard, touch, and mouse at 250px", async () => {
+    const cases = [
+      {
+        name: "G502 X Plus",
+        mode: "keyboard",
+        expectedClass: "device-row-current",
+      },
+      {
+        name: "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
+        mode: "touch",
+        expectedClass: "device-row-selected",
+      },
+      {
+        name: "Saved Aerox <img src=x onerror=globalThis.fixturePwned=true>",
+        mode: "mouse",
+        expectedClass: "device-row-missing",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const { context, page } = await openFixturePage(browser, origin, fixture);
+      try {
+        const row = page.locator(".device-row-selected").filter({ hasText: testCase.name }).first();
+        const remove = row.getByRole("button", {
+          name: `Remove ${testCase.name} from cycle`,
+        });
+        await row.waitFor({ state: "visible" });
+        expect(await row.evaluate((element, className) =>
+          element.classList.contains(className), testCase.expectedClass
+        )).toBe(true);
+        expect(await row.locator(".device-line").evaluate((line) =>
+          [...line.children].map((child) => child.className)
+        )).toEqual(["cycle-position", "device-identity", "drag-grip"]);
+        expect(await remove.evaluate((button) =>
+          button.closest(".device-identity") !== null
+        )).toBe(true);
+        const target = await remove.boundingBox();
+        expect(target?.height ?? 0).toBeGreaterThanOrEqual(28);
+
+        if (testCase.mode === "keyboard") {
+          await remove.focus();
+          await remove.press("Enter");
+        } else if (testCase.mode === "touch") {
+          await remove.tap();
+        } else {
+          await remove.click();
+        }
+
+        await expect.poll(() => page.locator(".device-row-selected").count()).toBe(2);
+        expect(await page.locator(".device-row-selected .device-name").allTextContents())
+          .not.toContain(testCase.name);
+        const persisted = await page.evaluate(() =>
+          globalThis.__fixtureSocket().sent.filter((message) => message.event === "setSettings")
+        );
+        expect(persisted).toHaveLength(1);
+        expect(persisted[0].payload.selectedDevices.map((device: any) => device.name))
+          .not.toContain(testCase.name);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth))
+          .toBe(await page.evaluate(() => document.documentElement.clientWidth));
+      } finally {
+        await context.close();
+      }
+    }
+  }, 15_000);
+
+  it("keeps the moved row focused across two consecutive Alt+Arrow moves", async () => {
+    const { context, page } = await openFixturePage(browser, origin, fixture);
+    try {
+      const movedName = "G502 X Plus";
+      const movedRow = page.locator(".device-row-selected").filter({
+        has: page.locator(".device-name", { hasText: movedName }),
+      });
+      await movedRow.focus();
+
+      await movedRow.press("Alt+ArrowDown");
+      await expect.poll(() => page.evaluate(() =>
+        document.activeElement?.querySelector(".device-name")?.textContent
+      )).toBe(movedName);
+      await movedRow.press("Alt+ArrowDown");
+      await expect.poll(() => page.evaluate(() =>
+        document.activeElement?.querySelector(".device-name")?.textContent
+      )).toBe(movedName);
+
+      expect(await page.locator(".device-row-selected .device-name").allTextContents()).toEqual([
+        "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
+        "Saved Aerox <img src=x onerror=globalThis.fixturePwned=true>",
+        "G502 X Plus",
+      ]);
+      expect(
+        await page.evaluate(() =>
+          globalThis.__fixtureSocket().sent.filter((message) => message.event === "setSettings").length
+        )
+      ).toBe(2);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it("does not move focus onto a reordered row after mouse drag", async () => {
+    const { context, page } = await openFixturePage(browser, origin, fixture);
+    try {
+      await page.locator("#refreshBtn").focus();
+      await page.locator(".drag-grip").first().dragTo(
+        page.locator(".device-row-selected").nth(2)
+      );
+      await expect.poll(() => page.evaluate(() =>
+        globalThis.__fixtureSocket().sent.filter((message) => message.event === "setSettings").length
+      )).toBe(1);
+      expect(await page.evaluate(() =>
+        document.activeElement?.classList.contains("device-row-selected") ?? false
+      )).toBe(false);
     } finally {
       await context.close();
     }
@@ -158,14 +345,25 @@ async function openFixturePage(
   browser: Browser,
   origin: string,
   fixture: Record<string, any>,
-  height = 900
-): Promise<{ context: BrowserContext; page: Page }> {
+  height = 900,
+  width = 250
+): Promise<{ context: BrowserContext; page: Page; browserErrors: string[] }> {
   const context = await browser.newContext({
-    viewport: { width: 250, height },
+    viewport: { width, height },
     hasTouch: true,
     isMobile: true,
   });
   const page = await context.newPage();
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(`console: ${message.text()}`);
+  });
+  page.on("pageerror", (error) => browserErrors.push(`page: ${error.message}`));
+  page.on("requestfailed", (request) => {
+    browserErrors.push(
+      `request: ${request.url()} ${request.failure()?.errorText ?? "failed"}`
+    );
+  });
   await page.addInitScript(() => {
     class FixtureWebSocket extends EventTarget {
       static instance: FixtureWebSocket | undefined;
@@ -218,9 +416,13 @@ async function openFixturePage(
       event: "sendToPropertyInspector",
       payload: state.discovery,
     });
+    globalThis.__fixtureSocket().receive({
+      event: "sendToPropertyInspector",
+      payload: state.runtime,
+    });
   }, fixture);
   await page.locator(".device-row-selected").first().waitFor({ state: "visible" });
-  return { context, page };
+  return { context, page, browserErrors };
 }
 
 async function centerOf(locator: ReturnType<Page["locator"]>): Promise<{ x: number; y: number }> {

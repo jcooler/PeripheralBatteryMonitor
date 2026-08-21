@@ -128,6 +128,45 @@ describe("discovery cache", () => {
     await expect(discovery).resolves.toMatchObject({ notices: [recovered] });
   });
 
+  it("replaces sensitive provider exceptions with fixed discovery categories", async () => {
+    const failures = [
+      ["steelseries", "serial:SS-SECRET-001"],
+      ["logitech", "dev00000042"],
+      ["hid", "\\\\?\\HID#VID_054C&PID_0CE6#SECRET"],
+      ["windows", "BTHENUM\\DEV_AABBCCDDEEFF"],
+      ["windows-gamepad", "stderr: GetGamepads failed with private output"],
+      ["xinput", '{"payload": malformed'],
+    ] as const;
+    const failingProviders = failures.map(([id, message]) => {
+      const failing = provider(id, []);
+      failing.discover.mockRejectedValue(new Error(message));
+      return failing;
+    });
+    const catalog = new DeviceCatalog(failingProviders, { now: () => 42 });
+
+    const result = await catalog.discover();
+
+    expect(result.errors).toEqual([
+      { provider: "steelseries", providerLabel: "SteelSeries GG", message: "SteelSeries GG unavailable" },
+      { provider: "logitech", providerLabel: "Logitech G Hub", message: "Logitech G Hub unavailable" },
+      { provider: "hid", providerLabel: "HID", message: "HID unavailable" },
+      { provider: "windows", providerLabel: "Windows Bluetooth", message: "Windows Bluetooth unavailable" },
+      { provider: "windows-gamepad", providerLabel: "Windows Gamepad", message: "Windows Gamepad unavailable" },
+      { provider: "xinput", providerLabel: "XInput", message: "XInput unavailable" },
+    ]);
+    const serialized = JSON.stringify(result.errors);
+    for (const sensitive of [
+      "SS-SECRET-001",
+      "dev00000042",
+      "VID_054C",
+      "AABBCCDDEEFF",
+      "stderr",
+      "payload",
+    ]) {
+      expect(serialized).not.toContain(sensitive);
+    }
+  });
+
   it("reuses a provider snapshot until TTL expiry and refreshes when forced", async () => {
     let now = 10_000;
     const ss = provider("steelseries", [descriptor("steelseries", "1", "Aerox")]);
@@ -195,7 +234,7 @@ describe("discovery cache", () => {
     });
     await expect(stale).resolves.toMatchObject({
       devices: [],
-      errors: [{ message: "Discovery invalidated" }],
+      errors: [{ message: "Windows Bluetooth unavailable" }],
     });
     await expect(catalog.discover()).resolves.toMatchObject({
       devices: [{ key: "windows:new" }],

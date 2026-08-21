@@ -327,6 +327,88 @@ describe("BatteryAction Stream Deck adapter", () => {
     });
   });
 
+  it("never forwards provider discovery details containing identifiers, paths, stderr, or payloads", async () => {
+    const sensitiveMessages = [
+      ["steelseries", "serial:SS-SECRET-001"],
+      ["logitech", "dev00000042"],
+      ["hid", "\\\\?\\HID#VID_054C&PID_0CE6#SECRET"],
+      ["windows", "BTHENUM\\DEV_AABBCCDDEEFF"],
+      ["windows-gamepad", "stderr: GetGamepads failed with private output"],
+      ["xinput", '{"payload": malformed'],
+    ] as const;
+    const discovery: DiscoveryResult = {
+      devices: [steelSeriesDevice()],
+      errors: sensitiveMessages.map(([provider, message]) => ({
+        provider,
+        providerLabel: `untrusted ${provider} label ${message}`,
+        message,
+      })),
+      notices: [],
+      refreshedAt: 42,
+    };
+    const sent: any[] = [];
+    const action = new BatteryAction({
+      runtime: runtime(Promise.resolve(discovery)),
+      inspector: new InspectorMessenger({
+        activeContextId: () => "context-1",
+        send: async (message) => { sent.push(message); },
+      }),
+    });
+
+    await action.onSendToPlugin({
+      action: actionHandle({}),
+      payload: { event: "getDevices" },
+    } as never);
+
+    expect(sent.at(-1)?.errors).toEqual([
+      { provider: "steelseries", providerLabel: "SteelSeries GG", message: "SteelSeries GG unavailable" },
+      { provider: "logitech", providerLabel: "Logitech G Hub", message: "Logitech G Hub unavailable" },
+      { provider: "hid", providerLabel: "HID", message: "HID unavailable" },
+      { provider: "windows", providerLabel: "Windows Bluetooth", message: "Windows Bluetooth unavailable" },
+      { provider: "windows-gamepad", providerLabel: "Windows Gamepad", message: "Windows Gamepad unavailable" },
+      { provider: "xinput", providerLabel: "XInput", message: "XInput unavailable" },
+    ]);
+    const serialized = JSON.stringify(sent.at(-1));
+    expect(serialized).not.toMatch(
+      /SS-SECRET-001|dev00000042|VID_054C|AABBCCDDEEFF|stderr|payload/i
+    );
+  });
+
+  it("uses one fixed Inspector error when top-level discovery rejects with private data", async () => {
+    const privateFailure = [
+      "serial:SS-SECRET-002",
+      "dev00000043",
+      "\\\\?\\HID#VID_046D&PID_C548#SECRET",
+      "BTHENUM\\DEV_112233445566",
+      "stderr: private process output",
+      '{"payload": malformed',
+    ].join(" | ");
+    const sent: any[] = [];
+    const action = new BatteryAction({
+      runtime: runtime(Promise.reject(new Error(privateFailure))),
+      inspector: new InspectorMessenger({
+        activeContextId: () => "context-1",
+        send: async (message) => { sent.push(message); },
+      }),
+    });
+
+    await action.onSendToPlugin({
+      action: actionHandle({}),
+      payload: { event: "refreshDevices" },
+    } as never);
+
+    expect(sent.at(-1)).toEqual({
+      event: "deviceList",
+      state: "error",
+      message: "Device discovery failed",
+      devices: [],
+      errors: [],
+    });
+    expect(JSON.stringify(sent.at(-1))).not.toMatch(
+      /SS-SECRET-002|dev00000043|VID_046D|112233445566|stderr|payload/i
+    );
+  });
+
   it("sends fixed runtime battery summaries without exposing unavailable details", async () => {
     const percentageDevice = steelSeriesDevice();
     const qualitativeDevice = windowsKeyboard();

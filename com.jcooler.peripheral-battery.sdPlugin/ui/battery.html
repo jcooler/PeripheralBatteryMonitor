@@ -175,7 +175,18 @@
         cursor: pointer;
       }
 
-      .device-row-selected .device-identity { cursor: default; }
+      .device-row-selected .device-identity {
+        cursor: default;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .device-summary {
+        display: grid;
+        min-width: 0;
+        overflow: hidden;
+      }
 
       .device-name {
         overflow: hidden;
@@ -217,6 +228,25 @@
         flex: 0 0 auto;
         color: var(--text);
         font: 600 10px/1 Consolas, "SFMono-Regular", monospace;
+      }
+
+      .remove-device {
+        min-width: 48px;
+        min-height: 28px;
+        padding: 3px 6px;
+        border: 1px solid #5a5a5a;
+        border-radius: 4px;
+        background: #303030;
+        color: #c7c7c7;
+        cursor: pointer;
+        font-size: 10px;
+        line-height: 1;
+      }
+
+      .remove-device:hover {
+        border-color: #777;
+        background: #494949;
+        color: var(--text);
       }
 
       .cycle-position {

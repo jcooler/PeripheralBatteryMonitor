@@ -14,8 +14,8 @@ GG inventory supplies an exact numeric device ID but no hardware serial in the r
 
 1. Add **Battery Monitor** to a Stream Deck key.
 2. Open the Property Inspector and refresh the device catalog.
-3. Check each device to include it.
-4. Use the arrow buttons to set cycle order. Row 1 is marked **Default** and is the fallback if a saved device is removed.
+3. Check each device to include it. Use the selected row's **Remove** button to take it out of the cycle.
+4. Drag a selected row's grip, or focus the row and use **Alt+Arrow**, to set cycle order. Row 1 is the fallback if a saved device is removed.
 5. Choose the existing polling and display options.
 
 Configured devices remain in the list when disconnected. They are never silently replaced by a same-name, same-brand, or first available device.

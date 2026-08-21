@@ -154,6 +154,143 @@ describe("Property Inspector device-list model", () => {
     });
   });
 
+  it.each([
+    {
+      label: "schema-v2 name mismatch",
+      settings: {
+        schemaVersion: 2,
+        selectedDevices: [{
+          ...steelSeriesMouse,
+          name: "Saved Aerox 5 Wireless",
+        }],
+      },
+      saved: { ...steelSeriesMouse, name: "Saved Aerox 5 Wireless" },
+      discovered: { ...steelSeriesMouse, name: "Replacement Aerox 9 Wireless" },
+    },
+    {
+      label: "schema-v2 type mismatch",
+      settings: {
+        schemaVersion: 2,
+        selectedDevices: [{
+          ...steelSeriesMouse,
+          name: "Saved Aerox 5 Wireless",
+        }],
+      },
+      saved: { ...steelSeriesMouse, name: "Saved Aerox 5 Wireless" },
+      discovered: {
+        ...steelSeriesMouse,
+        name: "Saved Aerox 5 Wireless",
+        deviceType: "Headset",
+      },
+    },
+    {
+      label: "v1 recycled name with a compatible generic type",
+      settings: {
+        deviceBrand: "steelseries",
+        deviceId: 7,
+        deviceName: "[SS] Saved Aerox 5 Wireless",
+      },
+      saved: {
+        ...steelSeriesMouse,
+        name: "Saved Aerox 5 Wireless",
+        deviceType: "Device",
+      },
+      discovered: { ...steelSeriesMouse, name: "Replacement Aerox 9 Wireless" },
+    },
+  ])("keeps a recycled SteelSeries $label as separate unavailable and replacement rows", ({
+    settings,
+    saved,
+    discovered,
+  }) => {
+    const hydrated = selectedDevicesFromSettings(settings, [discovered]);
+
+    expect(hydrated).toMatchObject([{
+      key: saved.key,
+      name: saved.name,
+      deviceType: saved.deviceType,
+    }]);
+    expect(buildDeviceRows([discovered], hydrated)).toMatchObject([
+      {
+        included: true,
+        available: false,
+        device: {
+          key: saved.key,
+          name: saved.name,
+          deviceType: saved.deviceType,
+        },
+      },
+      {
+        included: false,
+        available: true,
+        device: {
+          key: discovered.key,
+          name: discovered.name,
+          deviceType: discovered.deviceType,
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      label: "schema-v2",
+      settings: {
+        schemaVersion: 2,
+        selectedDevices: [{
+          ...steelSeriesMouse,
+          name: "Saved Aerox 5 Wireless",
+        }],
+      },
+    },
+    {
+      label: "v1",
+      settings: {
+        deviceBrand: "steelseries",
+        deviceId: 7,
+        deviceName: "[SS] Saved Aerox 5 Wireless",
+      },
+    },
+  ])("requires explicit replacement selection without silently persisting $label metadata", ({ settings }) => {
+    const replacement = {
+      ...steelSeriesMouse,
+      name: "Replacement Aerox 9 Wireless",
+      deviceType: "Mouse",
+    };
+    const sent: any[] = [];
+    const rendered: any[] = [];
+    const controller = createInspectorController({
+      send: (message) => sent.push(message),
+      view: {
+        applySettings() {},
+        renderRows: (rows) => rendered.push(rows),
+        showStatus() {},
+      },
+    });
+    controller.open({ action: "action", context: "context", settings });
+    sent.length = 0;
+
+    controller.receiveDeviceList({ state: "success", devices: [replacement] });
+
+    expect(sent).toEqual([]);
+    expect(rendered.at(-1)).toMatchObject([
+      { included: true, available: false, device: { name: "Saved Aerox 5 Wireless" } },
+      { included: false, available: true, device: { name: "Replacement Aerox 9 Wireless" } },
+    ]);
+
+    controller.include(replacement, true);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload.selectedDevices).toMatchObject([{
+      key: replacement.key,
+      providerLabel: "SteelSeries GG",
+      name: replacement.name,
+      deviceType: replacement.deviceType,
+    }]);
+    expect(rendered.at(-1)).toMatchObject([
+      { included: true, available: true, device: { name: "Replacement Aerox 9 Wireless" } },
+    ]);
+  });
+
   it("uses trusted human-readable provider labels for every supported provider", () => {
     const inputs = [
       steelSeriesMouse,
@@ -452,6 +589,60 @@ describe("Property Inspector device-list model", () => {
     inputs[0].dispatch("change");
     expect(included).toEqual([["steelseries:7", true]]);
     expect(reordered).toEqual([]);
+  });
+
+  it("renders accessible Remove actions inside ordinary, active, and missing selected identities", () => {
+    const document = new FakeDocument();
+    const list = document.createElement("ol");
+    const included: Array<[string, boolean]> = [];
+    const rows = buildDeviceRows(
+      [windowsKeyboard, steelSeriesMouse],
+      [windowsKeyboard, steelSeriesMouse, xinputController],
+      {
+        currentDeviceKey: steelSeriesMouse.key,
+        statuses: [{
+          deviceKey: steelSeriesMouse.key,
+          state: "connected",
+          batteryText: "72%",
+        }],
+      }
+    );
+
+    renderDeviceList(list, rows, {
+      onIncluded: (device, checked) => included.push([device.key, checked]),
+      onReorder() {},
+    });
+
+    const selectedRows = findByClass(list, "device-row-selected");
+    const removeButtons = findByClass(list, "remove-device");
+    expect(selectedRows).toHaveLength(3);
+    expect(findByClass(list, "device-row-current")).toHaveLength(1);
+    expect(findByClass(list, "device-row-missing")).toHaveLength(1);
+    expect(selectedRowsChildren(list)).toEqual([
+      ["cycle-position", "device-identity", "drag-grip"],
+      ["cycle-position", "device-identity", "drag-grip"],
+      ["cycle-position", "device-identity", "drag-grip"],
+    ]);
+    expect(removeButtons.map((button) => button.type)).toEqual([
+      "button",
+      "button",
+      "button",
+    ]);
+    expect(removeButtons.map((button) => button.attributes.get("aria-label"))).toEqual([
+      "Remove Office Keyboard from cycle",
+      "Remove Aerox 5 Wireless from cycle",
+      "Remove Xbox Wireless Controller from cycle",
+    ]);
+    expect(selectedRows.map((row) =>
+      findAll(findByClass(row, "device-identity")[0], "button").length
+    )).toEqual([1, 1, 1]);
+
+    for (const button of removeButtons) button.dispatch("click");
+    expect(included).toEqual([
+      ["windows:BTH-2", false],
+      ["steelseries:7", false],
+      ["xinput:slot%3A0", false],
+    ]);
   });
 
   it("merges runtime summaries into exact device keys and renders current connection and battery state", () => {
@@ -806,6 +997,59 @@ describe("Property Inspector device-list model", () => {
       "Moved Aerox 5 Wireless to position 1 of 2",
       "",
     ]);
+  });
+
+  it.each([
+    { label: "ordinary", device: windowsKeyboard, available: true, current: false },
+    { label: "active", device: steelSeriesMouse, available: true, current: true },
+    { label: "missing", device: xinputController, available: false, current: false },
+  ])("removes an $label selected row through the controller", ({
+    device,
+    available,
+    current,
+  }) => {
+    const sent: any[] = [];
+    const rendered: any[] = [];
+    const controller = createInspectorController({
+      send: (message) => sent.push(message),
+      view: {
+        applySettings() {},
+        renderRows: (rows) => rendered.push(rows),
+        showStatus() {},
+      },
+    });
+    controller.open({
+      action: "action",
+      context: "context",
+      settings: {
+        schemaVersion: 2,
+        selectedDevices: [windowsKeyboard, steelSeriesMouse, xinputController],
+        activeDeviceKey: steelSeriesMouse.key,
+      },
+    });
+    controller.receiveDeviceList({
+      state: "success",
+      devices: [windowsKeyboard, steelSeriesMouse],
+    });
+    controller.receiveRuntimeStatus({
+      currentDeviceKey: steelSeriesMouse.key,
+      statuses: [],
+    });
+    sent.length = 0;
+
+    expect(rendered.at(-1).find((row: any) => row.device.key === device.key)).toMatchObject({
+      included: true,
+      available,
+      current,
+    });
+    controller.include(device, false);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload.selectedDevices.map((entry: any) => entry.key)).toEqual(
+      [windowsKeyboard, steelSeriesMouse, xinputController]
+        .filter((entry) => entry.key !== device.key)
+        .map((entry) => entry.key)
+    );
   });
 
   it("preserves a legacy unavailable selection when including another device", () => {

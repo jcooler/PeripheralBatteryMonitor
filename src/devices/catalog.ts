@@ -1,5 +1,6 @@
 import {
   makeDeviceKey,
+  safeProviderDiscoveryError,
   unavailableStatus,
   type BatteryStatus,
   type DeviceDescriptor,
@@ -70,11 +71,7 @@ export class DeviceCatalog {
     const candidates: DeviceDescriptor[] = [];
     for (const item of settled) {
       if ("error" in item) {
-        errors.push({
-          provider: item.provider.id,
-          providerLabel: item.provider.label,
-          message: errorMessage(item.error),
-        });
+        errors.push(safeProviderDiscoveryError(item.provider.id));
       } else {
         candidates.push(...item.devices);
         notices.push(...item.notices);

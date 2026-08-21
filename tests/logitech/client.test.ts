@@ -604,6 +604,37 @@ describe("Logitech G Hub provider", () => {
     expect(messages.join("\n")).not.toMatch(/dev0000005[12]|serial|hid\\|deviceInfos|\{.*\}|\n\s+at /i);
   });
 
+  it("deep-clones and freezes notice objects so callers cannot mutate later snapshots", async () => {
+    const { client } = setup([
+      {
+        id: "dev00000061",
+        extendedDisplayName: "G502 X Plus",
+        deviceType: "mouse",
+        capabilities: { hasBatteryStatus: true },
+      },
+      {
+        id: "dev00000062",
+        extendedDisplayName: "G502 X Plus",
+        deviceType: "mouse",
+        capabilities: { hasBatteryStatus: true },
+      },
+    ]);
+    await client.discover();
+
+    const first = client.discoveryNotices();
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first[0])).toBe(true);
+    expect(() => {
+      (first[0] as { message: string }).message = "mutated by inspector";
+    }).toThrow(TypeError);
+
+    const later = client.discoveryNotices();
+    expect(later[0]).not.toBe(first[0]);
+    expect(later[0]?.message).toBe(
+      "Two Logitech devices share the same model name; neither was selected automatically"
+    );
+  });
+
   it("logs a sanitized failed-read reason with the model name", async () => {
     const warnings: string[] = [];
     const { client, sockets } = setup([{

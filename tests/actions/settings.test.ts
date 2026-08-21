@@ -217,6 +217,70 @@ describe("battery action settings", () => {
     });
   });
 
+  it.each([
+    {
+      label: "schema-v2 name mismatch",
+      saved: {
+        key: "steelseries:42",
+        provider: "steelseries" as const,
+        providerLabel: "SteelSeries GG",
+        nativeId: "42",
+        name: "Saved Aerox 5 Wireless",
+        deviceType: "Mouse",
+      },
+      discovered: {
+        key: "steelseries:42",
+        provider: "steelseries" as const,
+        providerLabel: "SteelSeries GG",
+        nativeId: "42",
+        name: "Replacement Aerox 9 Wireless",
+        deviceType: "Mouse",
+      },
+    },
+    {
+      label: "schema-v2 type mismatch",
+      saved: {
+        key: "steelseries:42",
+        provider: "steelseries" as const,
+        providerLabel: "SteelSeries GG",
+        nativeId: "42",
+        name: "Saved Aerox 5 Wireless",
+        deviceType: "Mouse",
+      },
+      discovered: {
+        key: "steelseries:42",
+        provider: "steelseries" as const,
+        providerLabel: "SteelSeries GG",
+        nativeId: "42",
+        name: "Saved Aerox 5 Wireless",
+        deviceType: "Headset",
+      },
+    },
+    {
+      label: "v1 name mismatch with its compatible generic type",
+      saved: parseBatterySettings({
+        deviceBrand: "steelseries",
+        deviceId: 42,
+        deviceName: "Saved Aerox 5 Wireless",
+      }).settings.selectedDevices[0],
+      discovered: {
+        key: "steelseries:42",
+        provider: "steelseries" as const,
+        providerLabel: "SteelSeries GG",
+        nativeId: "42",
+        name: "Replacement Aerox 9 Wireless",
+        deviceType: "Mouse",
+      },
+    },
+  ])("does not adopt recycled SteelSeries metadata for $label", ({ saved, discovered }) => {
+    expect(prepareMigratedDevices([saved], [discovered])).toEqual({
+      selectedDevices: [saved],
+      activeDeviceKey: null,
+      safeToPersist: false,
+      changed: false,
+    });
+  });
+
   it("prioritizes one exact current Logitech session endpoint", () => {
     const legacy = legacyLogitech("Old saved display name", "Device");
     const canonical = logitechDevice(

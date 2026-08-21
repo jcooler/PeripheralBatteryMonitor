@@ -13,10 +13,10 @@
         "deviceType": "Mouse"
       },
       {
-        "key": "logitech:model%3A046d%3Ab35b%3Amx-keys",
+        "key": "logitech:model%3Amx%20keys%20s%20wireless%20illuminated%20keyboard%20with%20a%20deliberately%20long%20display%20name%7Ckeyboard",
         "provider": "logitech",
         "providerLabel": "Logitech G Hub",
-        "nativeId": "model:046d:b35b:mx-keys",
+        "nativeId": "model:mx keys s wireless illuminated keyboard with a deliberately long display name|keyboard",
         "name": "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
         "deviceType": "Keyboard"
       },
@@ -51,10 +51,10 @@
         "deviceType": "Mouse"
       },
       {
-        "key": "logitech:model%3A046d%3Ab35b%3Amx-keys",
+        "key": "logitech:model%3Amx%20keys%20s%20wireless%20illuminated%20keyboard%20with%20a%20deliberately%20long%20display%20name%7Ckeyboard",
         "provider": "logitech",
         "providerLabel": "Logitech G Hub",
-        "nativeId": "model:046d:b35b:mx-keys",
+        "nativeId": "model:mx keys s wireless illuminated keyboard with a deliberately long display name|keyboard",
         "name": "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
         "deviceType": "Keyboard"
       },
@@ -90,7 +90,7 @@
         "batteryText": "72%"
       },
       {
-        "deviceKey": "logitech:model%3A046d%3Ab35b%3Amx-keys",
+        "deviceKey": "logitech:model%3Amx%20keys%20s%20wireless%20illuminated%20keyboard%20with%20a%20deliberately%20long%20display%20name%7Ckeyboard",
         "state": "disconnected",
         "batteryText": "Disconnected"
       },
