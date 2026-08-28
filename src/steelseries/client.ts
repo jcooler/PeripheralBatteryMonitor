@@ -183,6 +183,8 @@ export class SteelSeriesClient implements DeviceProvider {
   private batteryData = new Map<string, LiveBattery>();
   private connectionData = new Map<string, boolean>();
   private headsetConnectionData = new Map<string, string>();
+  private connectionEventSequence = 0;
+  private connectionEventSequences = new Map<string, number>();
   private socket: SteelSeriesSocket | null = null;
   private socketGeneration = 0;
   private lifecycleGeneration = 0;
@@ -373,6 +375,7 @@ export class SteelSeriesClient implements DeviceProvider {
 
     const lifecycleGeneration = this.lifecycleGeneration;
     const discoveryGeneration = this.discoveryGeneration;
+    const connectionEventSequence = this.connectionEventSequence;
     const address = this.encryptedAddress;
     const payload = (await this.httpGet({
       address,
@@ -401,6 +404,16 @@ export class SteelSeriesClient implements DeviceProvider {
     const batteryDevices = candidates.filter(
       (device) => identityCounts.get(device.id) === 1
     );
+    for (const device of batteryDevices) {
+      const nativeId = String(device.id);
+      const lastConnectionEvent = this.connectionEventSequences.get(nativeId) ?? 0;
+      if (lastConnectionEvent <= connectionEventSequence) {
+        this.connectionData.delete(nativeId);
+        this.headsetConnectionData.delete(nativeId);
+        this.connectionEventSequences.delete(nativeId);
+        if (device.connected === 0) this.batteryData.delete(nativeId);
+      }
+    }
     this.cachedDevices = new Map(
       batteryDevices.map((device) => [String(device.id), device])
     );
@@ -544,6 +557,7 @@ export class SteelSeriesClient implements DeviceProvider {
       const status = data.connection_status.status;
       if (typeof status === "number") {
         const connected = status === 1;
+        this.recordConnectionEvent(nativeId);
         this.connectionData.set(nativeId, connected);
         if (!connected) this.batteryData.delete(nativeId);
       }
@@ -552,6 +566,7 @@ export class SteelSeriesClient implements DeviceProvider {
     if (isRecord(data.connectionEvent)) {
       const status = data.connectionEvent.connectionStatus;
       if (typeof status === "string") {
+        this.recordConnectionEvent(nativeId);
         this.headsetConnectionData.set(nativeId, status);
         if (!isConnectedHeadsetState(status)) {
           this.batteryData.delete(nativeId);
@@ -598,6 +613,13 @@ export class SteelSeriesClient implements DeviceProvider {
     this.batteryData.clear();
     this.connectionData.clear();
     this.headsetConnectionData.clear();
+    this.connectionEventSequence = 0;
+    this.connectionEventSequences.clear();
+  }
+
+  private recordConnectionEvent(nativeId: string): void {
+    this.connectionEventSequence += 1;
+    this.connectionEventSequences.set(nativeId, this.connectionEventSequence);
   }
 
   private scheduleReconnect(): void {

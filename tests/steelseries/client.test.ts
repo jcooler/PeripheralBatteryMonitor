@@ -195,6 +195,74 @@ describe("passive SteelSeries GG client", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("lets a newer passive inventory refresh replace an older disconnect event", async () => {
+    const { client, sockets } = setup();
+    const [mouse] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, connection_status: { status: 0 } },
+    })));
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "disconnected",
+    });
+
+    await client.discover();
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+  });
+
+  it("preserves a disconnect event received during an inventory refresh", async () => {
+    const nextInventory = deferred<unknown>();
+    const { client, httpGet, sockets } = setup();
+    const [mouse] = await client.discover();
+    httpGet.mockImplementationOnce(() => nextInventory.promise);
+
+    const refresh = client.discover();
+    await vi.waitFor(() => expect(httpGet).toHaveBeenCalledTimes(2));
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, connection_status: { status: 0 } },
+    })));
+    nextInventory.resolve({ devices: [batteryMouse] });
+    await refresh;
+
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "disconnected",
+      detail: "Disconnected",
+    });
+  });
+
+  it("does not reuse battery data after inventory confirms a disconnect", async () => {
+    const { client, httpGet, sockets } = setup();
+    const [mouse] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 42, battery_status: { charging: 0, level: 63 } },
+    })));
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 63 },
+    });
+
+    httpGet.mockResolvedValueOnce({
+      devices: [{ ...batteryMouse, connected: 0 }],
+    });
+    await client.discover();
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "disconnected",
+    });
+
+    httpGet.mockResolvedValueOnce({ devices: [batteryMouse] });
+    await client.discover();
+    await expect(client.readStatus(mouse)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+  });
+
   it("accepts an exact legacy ID and saved name until canonical type metadata is persisted", async () => {
     const { client, sockets } = setup();
     const [legacyMouse] = parseBatterySettings({
