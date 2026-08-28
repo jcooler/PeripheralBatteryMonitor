@@ -20,7 +20,7 @@ function logitechDevice(
   return {
     key: makeDeviceKey("logitech", nativeId),
     provider: "logitech",
-    providerLabel: "Logitech G Hub",
+    providerLabel: "Logitech",
     nativeId,
     name,
     deviceType,
@@ -38,7 +38,7 @@ function legacyLogitech(
   return {
     key: makeDeviceKey("logitech", nativeId),
     provider: "logitech",
-    providerLabel: "Logitech G Hub",
+    providerLabel: "Logitech",
     nativeId,
     name,
     deviceType,
@@ -46,6 +46,41 @@ function legacyLogitech(
 }
 
 describe("battery action settings", () => {
+  it("preserves Logitech identity, order, and active position while replacing runtime source labels with the trusted provider label", () => {
+    const mouseNativeId = "model:g502 x plus wireless gaming mouse|mouse";
+    const keyboardNativeId = "model:g915|keyboard";
+    const mouseKey = makeDeviceKey("logitech", mouseNativeId);
+    const parsed = parseBatterySettings({
+      schemaVersion: 2,
+      selectedDevices: [
+        {
+          provider: "logitech",
+          nativeId: mouseNativeId,
+          providerLabel: "Direct HID++",
+          name: "G502 X Plus",
+          deviceType: "Mouse",
+        },
+        {
+          provider: "logitech",
+          nativeId: keyboardNativeId,
+          providerLabel: "G Hub fallback",
+          name: "G915",
+          deviceType: "Keyboard",
+        },
+      ],
+      activeDeviceKey: mouseKey,
+    });
+
+    expect(parsed.settings.selectedDevices.map((device) => device.nativeId)).toEqual([
+      mouseNativeId,
+      keyboardNativeId,
+    ]);
+    expect(
+      parsed.settings.selectedDevices.map((device) => device.providerLabel)
+    ).toEqual(["Logitech", "Logitech"]);
+    expect(parsed.settings.activeDeviceKey).toBe(mouseKey);
+  });
+
   it("preserves one explicit ordered device list and removes duplicate keys", () => {
     const parsed = parseBatterySettings({
       schemaVersion: 2,

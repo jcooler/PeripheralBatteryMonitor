@@ -148,7 +148,7 @@ describe("discovery cache", () => {
 
     expect(result.errors).toEqual([
       { provider: "steelseries", providerLabel: "SteelSeries GG", message: "SteelSeries GG unavailable" },
-      { provider: "logitech", providerLabel: "Logitech G Hub", message: "Logitech G Hub unavailable" },
+      { provider: "logitech", providerLabel: "Logitech", message: "Logitech unavailable" },
       { provider: "hid", providerLabel: "HID", message: "HID unavailable" },
       { provider: "windows", providerLabel: "Windows Bluetooth", message: "Windows Bluetooth unavailable" },
       { provider: "windows-gamepad", providerLabel: "Windows Gamepad", message: "Windows Gamepad unavailable" },

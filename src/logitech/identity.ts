@@ -1,4 +1,4 @@
-import type { GHubDevice } from "./client";
+import type { GHubDevice } from "./ghub-client";
 
 export interface LogitechIdentityCandidate {
   device: GHubDevice;

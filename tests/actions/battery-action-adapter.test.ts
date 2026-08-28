@@ -67,7 +67,7 @@ describe("BatteryAction Stream Deck adapter", () => {
     const canonical: DeviceDescriptor = {
       key: makeDeviceKey("logitech", "model:g502 x plus|mouse"),
       provider: "logitech",
-      providerLabel: "Logitech G Hub",
+      providerLabel: "Logitech",
       nativeId: "model:g502 x plus|mouse",
       name: "G502 X Plus",
       deviceType: "Mouse",
@@ -77,7 +77,7 @@ describe("BatteryAction Stream Deck adapter", () => {
     const legacyDevice: DeviceRef = {
       key: makeDeviceKey("logitech", "session:dev00000006"),
       provider: "logitech",
-      providerLabel: "Logitech G Hub",
+      providerLabel: "Logitech",
       nativeId: "session:dev00000006",
       name: "G502 X Plus",
       deviceType: "Mouse",
@@ -112,7 +112,7 @@ describe("BatteryAction Stream Deck adapter", () => {
     expect(persisted?.selectedDevices).toEqual([{
       key: canonical.key,
       provider: "logitech",
-      providerLabel: "Logitech G Hub",
+      providerLabel: "Logitech",
       nativeId: canonical.nativeId,
       name: "G502 X Plus",
       deviceType: "Mouse",
@@ -153,7 +153,7 @@ describe("BatteryAction Stream Deck adapter", () => {
     const legacy: DeviceRef = {
       key: makeDeviceKey("logitech", legacyNativeId),
       provider: "logitech",
-      providerLabel: "Logitech G Hub",
+      providerLabel: "Logitech",
       nativeId: legacyNativeId,
       name: "G502 X Plus",
       deviceType: "Mouse",
@@ -231,7 +231,7 @@ describe("BatteryAction Stream Deck adapter", () => {
       devices: [{
         key: makeDeviceKey("logitech", "model:g502 x plus|mouse"),
         provider: "logitech" as const,
-        providerLabel: "Logitech G Hub",
+        providerLabel: "Logitech",
         nativeId: "model:g502 x plus|mouse",
         name: "G502 X Plus",
         deviceType: "Mouse",
@@ -243,7 +243,7 @@ describe("BatteryAction Stream Deck adapter", () => {
       devices: ["serial:first", "serial:second"].map((nativeId) => ({
         key: makeDeviceKey("logitech", nativeId),
         provider: "logitech" as const,
-        providerLabel: "Logitech G Hub",
+        providerLabel: "Logitech",
         nativeId,
         name: "G502 X Plus",
         deviceType: "Mouse",
@@ -257,7 +257,7 @@ describe("BatteryAction Stream Deck adapter", () => {
     const savedDevice: DeviceRef = {
       key: makeDeviceKey("logitech", nativeId),
       provider: "logitech",
-      providerLabel: "Logitech G Hub",
+      providerLabel: "Logitech",
       nativeId,
       name: savedName,
       deviceType: "Mouse",
@@ -362,7 +362,7 @@ describe("BatteryAction Stream Deck adapter", () => {
 
     expect(sent.at(-1)?.errors).toEqual([
       { provider: "steelseries", providerLabel: "SteelSeries GG", message: "SteelSeries GG unavailable" },
-      { provider: "logitech", providerLabel: "Logitech G Hub", message: "Logitech G Hub unavailable" },
+      { provider: "logitech", providerLabel: "Logitech", message: "Logitech unavailable" },
       { provider: "hid", providerLabel: "HID", message: "HID unavailable" },
       { provider: "windows", providerLabel: "Windows Bluetooth", message: "Windows Bluetooth unavailable" },
       { provider: "windows-gamepad", providerLabel: "Windows Gamepad", message: "Windows Gamepad unavailable" },

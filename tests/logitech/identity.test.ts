@@ -5,7 +5,7 @@ import {
   makeLogitechModelIdentity,
   normalizeIdentityText,
 } from "../../src/logitech/identity";
-import type { GHubDevice } from "../../src/logitech/client";
+import type { GHubDevice } from "../../src/logitech/ghub-client";
 
 function device(overrides: Partial<GHubDevice> = {}): GHubDevice {
   return {

@@ -54,7 +54,7 @@ export interface PreparedSettingsMigration {
 
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   steelseries: "SteelSeries GG",
-  logitech: "Logitech G Hub",
+  logitech: "Logitech",
   xinput: "XInput",
   windows: "Windows Bluetooth",
   "windows-gamepad": "Windows Gamepad",

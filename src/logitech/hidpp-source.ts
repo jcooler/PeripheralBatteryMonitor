@@ -148,6 +148,10 @@ export class DirectLogitechSource {
     this.discoveryCompleted = false;
   }
 
+  supports(ref: DeviceRef): boolean {
+    return isValidReference(ref);
+  }
+
   private enqueue<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.endpointQueues.get(key) ?? Promise.resolve();
     const result = previous.then(operation, operation);

@@ -1,5 +1,3 @@
-import WebSocketModule from "ws";
-
 import {
   makeDeviceKey,
   unavailableStatus,
@@ -9,145 +7,120 @@ import {
   type DeviceRef,
   type ProviderNotice,
 } from "../devices/types";
-import type { BatteryInfo } from "../types";
 import {
-  identifyLogitechDevices,
-  mapLogitechDeviceType,
-  type LogitechIdentityCandidate,
-} from "./identity";
+  GHubClient,
+  type LogitechDiagnosticSink,
+} from "./ghub-client";
+import { DirectLogitechSource } from "./hidpp-source";
 
 const PROVIDER_ID = "logitech" as const;
-const PROVIDER_LABEL = "Logitech G Hub";
-const GHUB_WS_URL = "ws://localhost:9010";
-const DEFAULT_CONNECT_TIMEOUT_MS = 3_000;
-const DEFAULT_REQUEST_TIMEOUT_MS = 3_000;
-const RECONNECT_DELAY_MS = 5_000;
-const MAX_RECONNECT_DELAY_MS = 60_000;
+const PROVIDER_LABEL = "Logitech";
 
-export interface GHubDevice {
-  id: string;
-  extendedDisplayName?: string;
-  deviceType?: string;
-  serialNumber?: string;
-  serial?: string;
-  deviceSerialNumber?: string;
-  connected?: boolean;
-  capabilities?: {
-    hasBatteryStatus?: boolean;
-  };
-}
-
-interface GHubBatteryState {
-  percentage?: unknown;
-  charging?: unknown;
-}
-
-export interface LogitechSocket {
-  on(event: "open", listener: () => void): this;
-  on(event: "message", listener: (data: Buffer) => void): this;
-  on(event: "close", listener: () => void): this;
-  on(event: "error", listener: (error: Error) => void): this;
-  send(data: string): void;
-  close(): void;
+export interface LogitechProviderSource {
+  discover(signal?: AbortSignal): Promise<DeviceDescriptor[]>;
+  readStatus(ref: DeviceRef, signal?: AbortSignal): Promise<BatteryStatus>;
+  invalidateDiscovery?(reason?: string): void;
+  discoveryNotices?(): readonly ProviderNotice[];
+  supports?(ref: DeviceRef): boolean;
+  destroy?(): void;
 }
 
 export interface LogitechClientOptions {
-  createSocket?: () => LogitechSocket;
-  now?: () => number;
-  connectTimeoutMs?: number;
-  requestTimeoutMs?: number;
+  directSource?: LogitechProviderSource;
+  ghubClient?: LogitechProviderSource;
   diagnosticSink?: LogitechDiagnosticSink;
+  now?: () => number;
 }
 
-export interface LogitechDiagnosticSink {
-  info(message: string): void;
-  warn(message: string): void;
-}
-
-interface PendingRequest {
-  generation: number;
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-  signal?: AbortSignal;
-  onAbort?: () => void;
+interface SourceCoverage {
+  readonly direct: boolean;
+  readonly ghub: boolean;
+  readonly generation: number;
 }
 
 export class LogitechClient implements DeviceProvider {
   readonly id = PROVIDER_ID;
   readonly label = PROVIDER_LABEL;
 
-  private readonly createSocket: () => LogitechSocket;
+  private readonly directSource: LogitechProviderSource;
+  private readonly ghubClient: LogitechProviderSource;
   private readonly now: () => number;
-  private readonly connectTimeoutMs: number;
-  private readonly requestTimeoutMs: number;
-  private readonly diagnosticSink: LogitechDiagnosticSink;
-
-  private socket: LogitechSocket | null = null;
-  private socketGeneration = 0;
-  private connected = false;
-  private connectPromise: Promise<boolean> | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private reconnectAttempt = 0;
-  private discoveryRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private discoveryRetryAttempt = 0;
-  private requestId = 0;
-  private pendingRequests = new Map<string, PendingRequest>();
-  private endpoints = new Map<string, GHubDevice>();
-  private endpointHistory = new Map<string, string>();
+  private coverage = new Map<string, SourceCoverage>();
   private notices: readonly ProviderNotice[] = [];
   private discoveryGeneration = 0;
-  private discoveryInFlight: Promise<DeviceDescriptor[]> | null = null;
-  private hasDiscovered = false;
   private destroyed = false;
 
   constructor(options: LogitechClientOptions = {}) {
-    this.createSocket =
-      options.createSocket ??
-      (() =>
-        new WebSocketModule(GHUB_WS_URL, ["json"], {
-          headers: {
-            Origin: "file://",
-            Pragma: "no-cache",
-            "Cache-Control": "no-cache",
-          },
-        }) as unknown as LogitechSocket);
+    this.directSource = options.directSource ?? new DirectLogitechSource();
+    this.ghubClient =
+      options.ghubClient ??
+      new GHubClient({
+        diagnosticSink: options.diagnosticSink,
+        reconnect: false,
+      });
     this.now = options.now ?? Date.now;
-    this.connectTimeoutMs =
-      options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-    this.requestTimeoutMs =
-      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    this.diagnosticSink = options.diagnosticSink ?? NOOP_DIAGNOSTIC_SINK;
   }
 
-  async initialize(): Promise<boolean> {
-    if (this.destroyed) return false;
-    if (this.connected && this.socket) return true;
-    if (this.connectPromise) return this.connectPromise;
-
-    const promise = this.connect();
-    this.connectPromise = promise;
-    try {
-      return await promise;
-    } finally {
-      if (this.connectPromise === promise) this.connectPromise = null;
+  async discover(signal?: AbortSignal): Promise<DeviceDescriptor[]> {
+    if (this.destroyed) throw new Error("Logitech provider stopped");
+    const generation = ++this.discoveryGeneration;
+    const [directResult, ghubResult] = await Promise.allSettled([
+      this.directSource.discover(signal),
+      this.ghubClient.discover(signal),
+    ]);
+    if (generation !== this.discoveryGeneration) {
+      throw new Error("Logitech discovery was invalidated");
     }
-  }
+    if (directResult.status === "rejected" && ghubResult.status === "rejected") {
+      this.coverage.clear();
+      this.notices = [];
+      throw new Error("Logitech discovery unavailable");
+    }
 
-  discover(signal?: AbortSignal): Promise<DeviceDescriptor[]> {
-    if (this.discoveryInFlight) return this.discoveryInFlight;
-    const request = this.fetchDevices(signal);
-    this.discoveryInFlight = request;
-    void request
-      .finally(() => {
-        if (this.discoveryInFlight === request) this.discoveryInFlight = null;
-      })
-      .catch(() => undefined);
-    return request;
+    const directDevices =
+      directResult.status === "fulfilled" ? directResult.value : [];
+    const ghubDevices =
+      ghubResult.status === "fulfilled" ? ghubResult.value : [];
+    const nextCoverage = new Map<string, SourceCoverage>();
+    for (const device of directDevices) {
+      nextCoverage.set(device.nativeId, {
+        direct: true,
+        ghub: false,
+        generation,
+      });
+    }
+    for (const device of ghubDevices) {
+      const existing = nextCoverage.get(device.nativeId);
+      nextCoverage.set(device.nativeId, {
+        direct: existing?.direct ?? false,
+        ghub: true,
+        generation,
+      });
+    }
+    this.coverage = nextCoverage;
+    this.notices = Object.freeze([
+      ...(directResult.status === "fulfilled"
+        ? this.directSource.discoveryNotices?.() ?? []
+        : []),
+      ...(ghubResult.status === "fulfilled"
+        ? this.ghubClient.discoveryNotices?.() ?? []
+        : []),
+    ]);
+
+    const merged = new Map<string, DeviceDescriptor>();
+    for (const device of directDevices) {
+      merged.set(device.nativeId, trustedDescriptor(device));
+    }
+    for (const device of ghubDevices) {
+      if (!merged.has(device.nativeId)) {
+        merged.set(device.nativeId, trustedDescriptor(device));
+      }
+    }
+    return [...merged.values()];
   }
 
   discoveryNotices(): readonly ProviderNotice[] {
-    return freezeNoticeSnapshot(this.notices);
+    return Object.freeze(this.notices.map((notice) => Object.freeze({ ...notice })));
   }
 
   async readStatus(
@@ -160,601 +133,85 @@ export class LogitechClient implements DeviceProvider {
     ) {
       return unavailableStatus(ref, this.now(), "Invalid Logitech identity");
     }
-
-    const ready = await this.initialize();
-    if (!ready) {
-      return unavailableStatus(ref, this.now(), "Logitech G Hub unavailable");
-    }
-
-    const device = this.endpoints.get(ref.nativeId);
-    if (!device) {
-      return unavailableStatus(
-        ref,
-        this.now(),
-        "Logitech device not found; refresh discovery"
-      );
-    }
-    if (device.connected === false) {
-      return {
-        state: "disconnected",
-        level: { kind: "unavailable" },
-        charging: null,
-        provider: PROVIDER_ID,
-        providerLabel: PROVIDER_LABEL,
-        observedAt: this.now(),
-        detail: "Disconnected",
-      };
-    }
-
-    try {
-      const response = (await this.sendRequest(
-        `/battery/${encodeURIComponent(device.id)}/state`,
-        signal
-      )) as { payload?: GHubBatteryState };
-      const percentage = response?.payload?.percentage;
-      if (!isPercentage(percentage)) {
-        return unavailableStatus(
-          ref,
-          this.now(),
-          "Logitech G Hub did not report a valid battery percentage"
-        );
+    const coverage = this.coverage.get(ref.nativeId);
+    const directSupported =
+      coverage?.direct === true || this.directSource.supports?.(ref) === true;
+    if (directSupported) {
+      const directStatus = await this.directSource.readStatus(ref, signal);
+      if (directStatus.state !== "unavailable") {
+        return trustedStatus(directStatus, directStatus.detail);
       }
-      const charging = response.payload?.charging;
-      return {
-        state: "connected",
-        level: { kind: "percentage", value: percentage },
-        charging: typeof charging === "boolean" ? charging : null,
-        provider: PROVIDER_ID,
-        providerLabel: PROVIDER_LABEL,
-        observedAt: this.now(),
-      };
-    } catch (error) {
-      const reason = diagnosticReason(error, "request failed");
-      this.diagnosticSink.warn(
-        `${safeEndpointName(device)} battery read failed: ${reason}`
-      );
-      return unavailableStatus(ref, this.now(), providerErrorMessage(error));
+      const fallback = await this.readGHubFallback(ref, signal);
+      return fallback ?? trustedStatus(directStatus, directStatus.detail);
     }
-  }
 
-  invalidateDiscovery(): void {
-    this.discoveryGeneration += 1;
-    this.discoveryInFlight = null;
-    this.clearDiscoveryRetryTimer();
-    this.endpoints.clear();
-    this.notices = [];
-  }
-
-  /** Compatibility wrapper until the Stream Deck action uses DeviceCatalog. */
-  async getDevices(): Promise<GHubDevice[]> {
-    try {
-      await this.discover();
-      return [...this.endpoints.values()];
-    } catch {
-      return [];
+    if (coverage?.ghub) {
+      const fallback = await this.ghubClient.readStatus(ref, signal);
+      return trustedStatus(fallback, "G Hub fallback");
     }
-  }
-
-  /** Compatibility wrapper; resolves only a current persistent identity. */
-  async getBatteryInfo(device: GHubDevice): Promise<BatteryInfo> {
-    const candidate = identifyLogitechDevices([...this.endpoints.values()]).candidates.find(
-      ({ device: endpoint }) => endpoint === device
+    return unavailableStatus(
+      { ...ref, providerLabel: PROVIDER_LABEL },
+      this.now(),
+      "Logitech device not found; refresh discovery"
     );
-    if (!candidate) return unavailableLegacyBattery(device);
+  }
 
-    const ref = toDescriptor(candidate);
-    const status = await this.readStatus(ref);
-    return {
-      deviceId: hashString(ref.nativeId),
-      deviceName: ref.name,
-      deviceType: ref.deviceType,
-      batteryLevel:
-        status.level.kind === "percentage" ? status.level.value : -1,
-      isCharging: status.charging === true,
-      isConnected: status.state !== "disconnected",
-    };
+  invalidateDiscovery(reason?: string): void {
+    this.discoveryGeneration += 1;
+    this.coverage.clear();
+    this.notices = [];
+    this.directSource.invalidateDiscovery?.(reason);
+    this.ghubClient.invalidateDiscovery?.(reason);
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
-    this.clearReconnectTimer();
-    this.clearDiscoveryRetryTimer();
-    this.socketGeneration += 1;
     this.discoveryGeneration += 1;
-    const socket = this.socket;
-    this.socket = null;
-    this.connected = false;
-    socket?.close();
-    this.endpoints.clear();
+    this.coverage.clear();
     this.notices = [];
-    this.rejectPending(new Error("Logitech G Hub client stopped"));
+    this.directSource.destroy?.();
+    this.ghubClient.destroy?.();
   }
 
-  private connect(): Promise<boolean> {
-    const generation = ++this.socketGeneration;
-    const oldSocket = this.socket;
-    this.socket = null;
-    this.connected = false;
-    oldSocket?.close();
-
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = (result: boolean): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        resolve(result);
-      };
-
-      let socket: LogitechSocket;
-      try {
-        socket = this.createSocket();
-      } catch {
-        this.scheduleReconnect();
-        resolve(false);
-        return;
-      }
-      this.socket = socket;
-
-      const timeout = setTimeout(() => {
-        if (!this.isCurrentSocket(socket, generation)) return;
-        this.handleSocketLoss(
-          socket,
-          generation,
-          new Error("Logitech G Hub connection timed out")
-        );
-        socket.close();
-        finish(false);
-      }, this.connectTimeoutMs);
-
-      socket.on("open", () => {
-        if (!this.isCurrentSocket(socket, generation)) return;
-        this.connected = true;
-        this.reconnectAttempt = 0;
-        this.clearReconnectTimer();
-        finish(true);
-        if (this.hasDiscovered) {
-          this.diagnosticSink.info("Logitech G Hub reconnected");
-          const discovery = this.discoveryInFlight ?? undefined;
-          queueMicrotask(() =>
-            void this.runReconnectDiscovery(generation, discovery)
-          );
-        }
-      });
-      socket.on("message", (data) => {
-        if (!this.isCurrentSocket(socket, generation)) return;
-        this.handleMessage(data, generation);
-      });
-      socket.on("close", () => {
-        if (!this.isCurrentSocket(socket, generation)) return;
-        this.handleSocketLoss(
-          socket,
-          generation,
-          new Error("Logitech G Hub connection closed")
-        );
-        finish(false);
-      });
-      socket.on("error", (error) => {
-        if (!this.isCurrentSocket(socket, generation)) return;
-        this.handleSocketLoss(socket, generation, error);
-        socket.close();
-        finish(false);
-      });
-    });
-  }
-
-  private async fetchDevices(signal?: AbortSignal): Promise<DeviceDescriptor[]> {
-    const generation = this.discoveryGeneration;
-    this.endpoints.clear();
-    try {
-      return await this.fetchDevicesForGeneration(generation, signal);
-    } catch (error) {
-      if (generation === this.discoveryGeneration && !this.destroyed) {
-        this.endpoints.clear();
-        this.notices = [];
-      }
-      throw error;
-    }
-  }
-
-  private async fetchDevicesForGeneration(
-    generation: number,
+  private async readGHubFallback(
+    ref: DeviceRef,
     signal?: AbortSignal
-  ): Promise<DeviceDescriptor[]> {
-    const ready = await this.initialize();
-    if (!ready) throw new Error("Logitech G Hub unavailable");
-    if (generation !== this.discoveryGeneration || this.destroyed) {
-      throw new Error("Logitech discovery generation changed");
-    }
-    const response = (await this.sendRequest("/devices/list", signal)) as {
-      payload?: { deviceInfos?: unknown };
-    };
-    if (generation !== this.discoveryGeneration || this.destroyed) {
-      throw new Error("Logitech discovery generation changed");
-    }
-    const rawDevices = response?.payload?.deviceInfos;
-    if (!Array.isArray(rawDevices)) {
-      throw new Error("Logitech G Hub returned an invalid device list");
-    }
-
-    const identities = identifyLogitechDevices(rawDevices.filter(isGHubDevice));
-    const identityCounts = new Map<string, number>();
-    for (const candidate of identities.candidates) {
-      identityCounts.set(
-        candidate.nativeId,
-        (identityCounts.get(candidate.nativeId) ?? 0) + 1
-      );
-    }
-
-    const endpoints = new Map<string, GHubDevice>();
-    const endpointHistory = new Map<string, string>();
-    const notices: ProviderNotice[] = [];
-    const descriptors: DeviceDescriptor[] = [];
-    for (const candidate of identities.candidates) {
-      if (identityCounts.get(candidate.nativeId) !== 1) continue;
-      endpoints.set(candidate.nativeId, candidate.device);
-      endpointHistory.set(candidate.nativeId, candidate.device.id);
-      const descriptor = toDescriptor(candidate);
-      descriptors.push(descriptor);
-      const priorEndpoint = this.endpointHistory.get(candidate.nativeId);
-      if (priorEndpoint !== undefined && priorEndpoint !== candidate.device.id) {
-        const message = `${safeEndpointName(candidate.device)} reconnected through G Hub`;
-        notices.push({
-          provider: PROVIDER_ID,
-          kind: "recovered",
-          message,
-          ...(candidate.kind === "model"
-            ? { deviceKey: descriptor.key }
-            : {}),
-        });
-      }
-    }
-    if (identities.ambiguousModelFingerprints.length > 0) {
-      const message =
-        "Two Logitech devices share the same model name; neither was selected automatically";
-      notices.push({ provider: PROVIDER_ID, kind: "ambiguous", message });
-    }
-    if (generation !== this.discoveryGeneration || this.destroyed) {
-      throw new Error("Logitech discovery generation changed");
-    }
-    this.endpoints = endpoints;
-    this.endpointHistory = endpointHistory;
-    this.notices = freezeNoticeSnapshot(notices);
-    this.hasDiscovered = true;
-    this.discoveryRetryAttempt = 0;
-    this.clearDiscoveryRetryTimer();
-    for (const notice of notices) {
-      if (notice.kind === "recovered") this.diagnosticSink.info(notice.message);
-      else this.diagnosticSink.warn(`${PROVIDER_LABEL}: ${notice.message}`);
-    }
-    return descriptors;
-  }
-
-  private sendRequest(path: string, signal?: AbortSignal): Promise<unknown> {
-    const socket = this.socket;
-    const generation = this.socketGeneration;
-    if (!socket || !this.connected) {
-      return Promise.reject(new Error("Logitech G Hub is not connected"));
-    }
-
-    return new Promise<unknown>((resolve, reject) => {
-      const id = `rr-${++this.requestId}`;
-      const timer = setTimeout(() => {
-        const error = new Error("Logitech G Hub request timed out");
-        this.finishPending(
-          id,
-          error
-        );
-        if (this.isCurrentSocket(socket, generation)) {
-          this.handleSocketLoss(socket, generation, error);
-          socket.close();
-        }
-      }, this.requestTimeoutMs);
-      const entry: PendingRequest = {
-        generation,
-        resolve,
-        reject,
-        timer,
-        signal,
-      };
-      if (signal) {
-        entry.onAbort = () => {
-          const error = new Error("Logitech G Hub request aborted");
-          error.name = "AbortError";
-          this.finishPending(id, error);
-        };
-        if (signal.aborted) {
-          clearTimeout(timer);
-          entry.onAbort();
-          return;
-        }
-        signal.addEventListener("abort", entry.onAbort, { once: true });
-      }
-      this.pendingRequests.set(id, entry);
+  ): Promise<BatteryStatus | null> {
+    let coverage = this.coverage.get(ref.nativeId);
+    if (!coverage?.ghub) {
       try {
-        socket.send(
-          JSON.stringify({ msgId: id, verb: "GET", path })
-        );
-      } catch (error) {
-        this.finishPending(
-          id,
-          error instanceof Error ? error : new Error(String(error))
-        );
+        const devices = await this.ghubClient.discover(signal);
+        if (!devices.some((device) => device.nativeId === ref.nativeId)) {
+          return null;
+        }
+        coverage = {
+          direct: coverage?.direct ?? false,
+          ghub: true,
+          generation: this.discoveryGeneration,
+        };
+        this.coverage.set(ref.nativeId, coverage);
+      } catch {
+        return null;
       }
-    });
-  }
-
-  private handleMessage(data: Buffer, generation: number): void {
-    try {
-      const response = JSON.parse(Buffer.from(data).toString("utf8")) as {
-        msgId?: unknown;
-        error?: unknown;
-      };
-      if (typeof response.msgId !== "string") return;
-      const pending = this.pendingRequests.get(response.msgId);
-      if (!pending || pending.generation !== generation) return;
-      if (response.error) {
-        this.finishPending(
-          response.msgId,
-          new Error("Logitech G Hub request failed")
-        );
-      } else {
-        this.finishPending(response.msgId, undefined, response);
-      }
-    } catch {
-      // Malformed unsolicited messages do not affect pending requests.
     }
-  }
-
-  private finishPending(id: string, error?: Error, value?: unknown): void {
-    const pending = this.pendingRequests.get(id);
-    if (!pending) return;
-    this.pendingRequests.delete(id);
-    clearTimeout(pending.timer);
-    if (pending.signal && pending.onAbort) {
-      pending.signal.removeEventListener("abort", pending.onAbort);
-    }
-    if (error) pending.reject(error);
-    else pending.resolve(value);
-  }
-
-  private rejectPending(error: Error): void {
-    for (const id of [...this.pendingRequests.keys()]) {
-      this.finishPending(id, error);
-    }
-  }
-
-  private handleSocketLoss(
-    socket: LogitechSocket,
-    generation: number,
-    error: Error
-  ): void {
-    if (!this.isCurrentSocket(socket, generation)) return;
-    const reason = diagnosticReason(error, "connection lost");
-    this.socketGeneration += 1;
-    this.socket = null;
-    this.connected = false;
-    this.discoveryGeneration += 1;
-    this.discoveryInFlight = null;
-    this.clearDiscoveryRetryTimer();
-    this.endpoints.clear();
-    this.notices = [];
-    this.rejectPending(error);
-    this.diagnosticSink.warn(
-      `${PROVIDER_LABEL} connection lost: ${reason}; reconnect scheduled`
-    );
-    this.scheduleReconnect();
-  }
-
-  private isCurrentSocket(socket: LogitechSocket, generation: number): boolean {
-    return (
-      !this.destroyed &&
-      this.socket === socket &&
-      this.socketGeneration === generation
-    );
-  }
-
-  private scheduleReconnect(): void {
-    if (this.destroyed || this.reconnectTimer) return;
-    const delay = Math.min(
-      RECONNECT_DELAY_MS * 2 ** this.reconnectAttempt,
-      MAX_RECONNECT_DELAY_MS
-    );
-    this.reconnectAttempt += 1;
-    this.reconnectTimer = setTimeout(async () => {
-      this.reconnectTimer = null;
-      const connected = await this.initialize();
-      if (!connected) this.scheduleReconnect();
-    }, delay);
-  }
-
-  private clearReconnectTimer(): void {
-    if (!this.reconnectTimer) return;
-    clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
-  }
-
-  private async runReconnectDiscovery(
-    socketGeneration: number,
-    discovery?: Promise<DeviceDescriptor[]>
-  ): Promise<void> {
-    if (!this.isCurrentSocketGeneration(socketGeneration)) return;
-    try {
-      await (discovery ?? this.discover());
-    } catch (error) {
-      if (!this.isCurrentSocketGeneration(socketGeneration)) return;
-      this.endpoints.clear();
-      this.notices = [];
-      this.diagnosticSink.warn(
-        `${PROVIDER_LABEL} discovery after reconnect failed: ${diagnosticReason(error, "request failed")}; retry scheduled`
-      );
-      this.scheduleDiscoveryRetry(socketGeneration);
-    }
-  }
-
-  private scheduleDiscoveryRetry(socketGeneration: number): void {
-    if (
-      this.destroyed ||
-      this.discoveryRetryTimer ||
-      !this.isCurrentSocketGeneration(socketGeneration)
-    ) {
-      return;
-    }
-    const delay = Math.min(
-      RECONNECT_DELAY_MS * 2 ** this.discoveryRetryAttempt,
-      MAX_RECONNECT_DELAY_MS
-    );
-    this.discoveryRetryAttempt += 1;
-    this.discoveryRetryTimer = setTimeout(() => {
-      this.discoveryRetryTimer = null;
-      if (!this.isCurrentSocketGeneration(socketGeneration)) return;
-      this.discoveryGeneration += 1;
-      this.discoveryInFlight = null;
-      void this.runReconnectDiscovery(socketGeneration);
-    }, delay);
-  }
-
-  private clearDiscoveryRetryTimer(): void {
-    if (!this.discoveryRetryTimer) return;
-    clearTimeout(this.discoveryRetryTimer);
-    this.discoveryRetryTimer = null;
-  }
-
-  private isCurrentSocketGeneration(generation: number): boolean {
-    return (
-      !this.destroyed &&
-      this.connected &&
-      this.socket !== null &&
-      this.socketGeneration === generation
-    );
+    const fallback = await this.ghubClient.readStatus(ref, signal);
+    return trustedStatus(fallback, "G Hub fallback");
   }
 }
 
-const NOOP_DIAGNOSTIC_SINK: LogitechDiagnosticSink = {
-  info: () => undefined,
-  warn: () => undefined,
-};
-
-function freezeNoticeSnapshot(
-  notices: readonly ProviderNotice[]
-): readonly ProviderNotice[] {
-  return Object.freeze(
-    notices.map((notice) => Object.freeze({ ...notice }))
-  );
+function trustedDescriptor(device: DeviceDescriptor): DeviceDescriptor {
+  return { ...device, providerLabel: PROVIDER_LABEL };
 }
 
-function isGHubDevice(value: unknown): value is GHubDevice {
-  if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) {
-    return false;
-  }
-  return true;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function toDescriptor(
-  candidate: LogitechIdentityCandidate
-): DeviceDescriptor {
-  const { device, nativeId, physicalId } = candidate;
+function trustedStatus(
+  status: BatteryStatus,
+  detail: string | undefined
+): BatteryStatus {
   return {
-    key: makeDeviceKey(PROVIDER_ID, nativeId),
+    ...status,
     provider: PROVIDER_ID,
     providerLabel: PROVIDER_LABEL,
-    nativeId,
-    name: device.extendedDisplayName?.trim() || "Logitech device",
-    deviceType: mapLogitechDeviceType(device.deviceType),
-    transientNativeIds: [`session:${device.id}`],
-    ...(physicalId ? { physicalId } : {}),
+    ...(detail === undefined ? {} : { detail }),
   };
-}
-
-function unavailableLegacyBattery(device: GHubDevice): BatteryInfo {
-  return {
-    deviceId: hashString(device.id),
-    deviceName: device.extendedDisplayName?.trim() || "Logitech device",
-    deviceType: mapLogitechDeviceType(device.deviceType),
-    batteryLevel: -1,
-    isCharging: false,
-    isConnected: false,
-  };
-}
-
-function isPercentage(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    value >= 0 &&
-    value <= 100
-  );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function providerErrorMessage(error: unknown): string {
-  const message = errorMessage(error);
-  if (
-    message === "Logitech G Hub request failed" ||
-    message === "Logitech G Hub request timed out" ||
-    message === "Logitech G Hub request aborted" ||
-    message === "Logitech G Hub connection closed" ||
-    message === "Logitech G Hub client stopped"
-  ) {
-    return message;
-  }
-  return "Logitech G Hub request failed";
-}
-
-function diagnosticReason(error: unknown, fallback: string): string {
-  const message = errorMessage(error).toLowerCase();
-  if (message.includes("timed out")) return "request timed out";
-  if (message.includes("aborted")) return "request aborted";
-  if (message.includes("connection closed")) return "connection closed";
-  if (message.includes("connection")) return "connection error";
-  return fallback;
-}
-
-function safeDeviceName(name: string): string {
-  const normalized = name.trim().replace(/\s+/gu, " ");
-  if (
-    !normalized ||
-    /dev\d{8,}|hid\\|\{.*\}|\bat\s+\S+:\d/iu.test(normalized)
-  ) {
-    return "Logitech device";
-  }
-  return normalized.slice(0, 80);
-}
-
-function safeEndpointName(device: GHubDevice): string {
-  const name = safeDeviceName(
-    device.extendedDisplayName?.trim() || "Logitech device"
-  );
-  const normalizedName = name.toLowerCase();
-  for (const serial of [
-    device.serialNumber,
-    device.serial,
-    device.deviceSerialNumber,
-  ]) {
-    if (
-      typeof serial === "string" &&
-      serial.trim() &&
-      normalizedName.includes(serial.trim().toLowerCase())
-    ) {
-      return "Logitech device";
-    }
-  }
-  return name;
-}
-
-/** Temporary numeric compatibility for the legacy action settings only. */
-function hashString(value: string): number {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) | 0;
-  }
-  return Math.abs(hash);
 }

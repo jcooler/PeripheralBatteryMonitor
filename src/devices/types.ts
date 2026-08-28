@@ -62,7 +62,7 @@ export interface ProviderDiscoveryError {
 
 const TRUSTED_PROVIDER_LABELS: Record<ProviderId, string> = {
   steelseries: "SteelSeries GG",
-  logitech: "Logitech G Hub",
+  logitech: "Logitech",
   xinput: "XInput",
   windows: "Windows Bluetooth",
   "windows-gamepad": "Windows Gamepad",

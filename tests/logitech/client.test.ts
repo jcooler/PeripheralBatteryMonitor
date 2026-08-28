@@ -2,11 +2,11 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  LogitechClient,
+  GHubClient,
   type GHubDevice,
   type LogitechDiagnosticSink,
   type LogitechSocket,
-} from "../../src/logitech/client";
+} from "../../src/logitech/ghub-client";
 
 class FakeSocket extends EventEmitter implements LogitechSocket {
   readonly sent: Array<Record<string, unknown>> = [];
@@ -46,9 +46,9 @@ const deviceList = [
   },
 ];
 
-const activeClients = new Set<LogitechClient>();
+const activeClients = new Set<GHubClient>();
 
-function track(client: LogitechClient): LogitechClient {
+function track(client: GHubClient): GHubClient {
   activeClients.add(client);
   return client;
 }
@@ -103,7 +103,7 @@ function setup(
     queueMicrotask(() => socket.emit("open"));
     return socket;
   });
-  const client = track(new LogitechClient({
+  const client = track(new GHubClient({
     createSocket,
     now: () => 12_345,
     requestTimeoutMs: 100,
@@ -178,7 +178,7 @@ describe("Logitech G Hub provider", () => {
       },
     ];
     const sockets: FakeSocket[] = [];
-    const client = new LogitechClient({
+    const client = new GHubClient({
       createSocket: () => {
         const socket = new FakeSocket();
         socket.responder = (message) => {
@@ -467,7 +467,7 @@ describe("Logitech G Hub provider", () => {
       deviceType: "mouse",
       capabilities: { hasBatteryStatus: true },
     }];
-    const client = track(new LogitechClient({
+    const client = track(new GHubClient({
       createSocket: () => {
         const socket = new FakeSocket();
         socket.responder = (message) => {
@@ -523,7 +523,7 @@ describe("Logitech G Hub provider", () => {
       deviceType: "mouse",
       capabilities: { hasBatteryStatus: true },
     }];
-    const client = track(new LogitechClient({
+    const client = track(new GHubClient({
       createSocket: () => {
         const socket = new FakeSocket();
         socket.responder = (message) => {
@@ -688,6 +688,30 @@ describe("Logitech G Hub provider", () => {
     expect(sockets[0].closeCalls).toBe(1);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(sockets).toHaveLength(2);
+  });
+
+  it("does not leave a reconnect timer or warning loop in composite-managed fallback mode", async () => {
+    vi.useFakeTimers();
+    const warnings: string[] = [];
+    const createSocket = vi.fn(() => {
+      throw new Error("port unavailable");
+    });
+    const client = track(
+      new GHubClient({
+        createSocket,
+        reconnect: false,
+        diagnosticSink: {
+          info: () => undefined,
+          warn: (message) => warnings.push(message),
+        },
+      })
+    );
+
+    await expect(client.discover()).rejects.toThrow("Logitech G Hub unavailable");
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(createSocket).toHaveBeenCalledTimes(1);
+    expect(warnings).toHaveLength(0);
   });
 
   it("starts a fresh discovery after invalidating an in-flight response", async () => {
