@@ -189,6 +189,10 @@ describe("DirectLogitechSource bounded status lifecycle", () => {
         0x11, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00,
         ...Array(13).fill(0),
       ]),
+      Buffer.from([
+        0x11, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00,
+        ...Array(13).fill(0),
+      ]),
     ]);
     const adapter: LogitechHidAdapter = {
       devicesAsync: vi.fn(async () => [device()]),
@@ -202,6 +206,38 @@ describe("DirectLogitechSource bounded status lifecycle", () => {
       detail: "Direct HID++ battery feature is unavailable",
     });
     expect(missingFeature.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the named read-only 0x1004 status operation when 0x1000 is absent", async () => {
+    const unifiedBattery = handle([
+      replies()[0],
+      Buffer.from([
+        0x11, 0x01, 0x00, 0x08, 0x00, 0x00, 0x00,
+        ...Array(13).fill(0),
+      ]),
+      Buffer.from([
+        0x11, 0x01, 0x00, 0x08, 0x06, 0x00, 0x00,
+        ...Array(13).fill(0),
+      ]),
+      Buffer.from([
+        0x11, 0x01, 0x06, 0x18, 68, 60, 1, ...Array(13).fill(0),
+      ]),
+    ]);
+    const adapter: LogitechHidAdapter = {
+      devicesAsync: vi.fn(async () => [device()]),
+      open: vi.fn(async () => unifiedBattery),
+    };
+    const source = new DirectLogitechSource({ adapter, now: () => 1_234 });
+    await source.discover();
+
+    await expect(source.readStatus(reference())).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 68 },
+      charging: true,
+      detail: "Direct HID++",
+    });
+    expect(unifiedBattery.close).toHaveBeenCalledTimes(1);
+    expect(unifiedBattery.write).toHaveBeenCalledTimes(4);
   });
 
   it("reports open failure as disconnected without exposing the HID path", async () => {

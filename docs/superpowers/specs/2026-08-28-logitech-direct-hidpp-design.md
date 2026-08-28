@@ -20,7 +20,7 @@ The transport may send only these HID++ requests:
 
 - `IRoot.GetProtocolVersion` for protocol verification.
 - `IRoot.GetFeature` for explicit battery feature discovery.
-- Status reads from a supported battery feature such as `0x1000` Battery Unified Level Status.
+- Status reads from allowlisted battery feature `0x1000` function `0`, or `0x1004` function `1` when `0x1000` is absent. The live G502 X Plus receiver exposed `0x1004`.
 
 No request may change firmware, profiles, lighting, report rate, DPI, charging policy, power state, pairing, or device configuration. Charging Control `0x1010`, DFU features, gaming configuration features, raw arbitrary requests, and undocumented writes are outside this design.
 

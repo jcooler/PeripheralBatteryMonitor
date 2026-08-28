@@ -14,7 +14,7 @@
 
 - Work only in `D:\DEV\SteelseriesBatteryMonitor-fix`; do not modify `D:\DEV\SteelseriesBatteryMonitor`.
 - Direct HID++ is allowlisted initially to Logitech `0x046d:0xc547` and the vendor-defined `0xff00` collection required for HID++ reports.
-- Permitted commands are `IRoot.GetProtocolVersion`, `IRoot.GetFeature`, and battery status function `0` for feature `0x1000`.
+- Permitted commands are `IRoot.GetProtocolVersion`, `IRoot.GetFeature` for `0x1000` or `0x1004`, battery status function `0` for `0x1000`, and status function `1` for `0x1004`. The `0x1004` fallback was added after the live allowlisted G502 proved `0x1000` absent and `0x1004` present.
 - Do not send keep-alive, wake, charging-control, DFU, profile, lighting, DPI, report-rate, pairing, configuration, or arbitrary caller-supplied requests.
 - Never persist or log HID paths, raw packets, receiver indexes, or serial values.
 - Preserve the existing `logitech:` identity namespace, ordered selections, and active position.
@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Produces: `HidppHandle`, `HidppRequest`, `HidppBatteryReading`, `HidppProtocolClient`.
-- Produces: `getProtocolVersion(deviceIndex, signal)`, `getFeature(deviceIndex, 0x1000, signal)`, and `getBatteryStatus(deviceIndex, featureIndex, signal)`.
+- Produces: `getProtocolVersion(deviceIndex, signal)`, allowlisted `getFeature` for `0x1000` or `0x1004`, `getBatteryStatus(deviceIndex, featureIndex, signal)`, and `getUnifiedBatteryStatus(deviceIndex, featureIndex, signal)`.
 - Consumes: a handle with `write(Buffer)`, `read(timeoutMs)`, and `close()` methods supplied by the direct source.
 
 - [ ] **Step 1: Write the failing packet tests**
@@ -145,7 +145,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Write failing status and lifecycle tests**
 
-Add cases proving that one open handle negotiates HID++ 2.0, resolves `0x1000`, reads battery, closes in `finally`, and returns a `BatteryStatus` with provider `logitech`, percentage, charging, and `Direct HID++` detail. Add cases for sleeping/unknown device, unsupported protocol, missing battery feature, open failure, timeout, cancellation, invalidated generation, and late results. Start two reads concurrently and prove request operations for one endpoint never overlap.
+Add cases proving that one open handle negotiates HID++ 2.0, resolves `0x1000` or the live-evidence fallback `0x1004`, reads battery, closes in `finally`, and returns a `BatteryStatus` with provider `logitech`, percentage, charging, and `Direct HID++` detail. Add cases for sleeping/unknown device, unsupported protocol, missing battery feature, open failure, timeout, cancellation, invalidated generation, and late results. Start two reads concurrently and prove request operations for one endpoint never overlap.
 
 - [ ] **Step 6: Run status tests and verify RED**
 
@@ -326,7 +326,7 @@ Verify the exact plugin Node worker exits while Stream Deck remains running. Do 
 
 Run: `node scripts/probe-logitech-hidpp.mjs`
 
-Expected: HID++ 2.0, battery feature `0x1000`, status kind `percentage`, value in `0..100`, no device configuration change, and no raw identifiers in output. If negotiation fails, record the exact sanitized boundary and stop implementation claims; do not add speculative feature calls.
+Expected: HID++ 2.0, allowlisted battery feature `0x1000` or `0x1004`, status kind `percentage`, value in `0..100`, no device configuration change, and no raw identifiers in output. If negotiation fails, record the exact sanitized boundary and stop implementation claims; do not add speculative feature calls.
 
 - [ ] **Step 7: Record live evidence**
 

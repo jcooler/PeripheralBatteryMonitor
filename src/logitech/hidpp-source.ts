@@ -51,6 +51,28 @@ export interface DirectLogitechSourceOptions {
   requestTimeoutMs?: number;
 }
 
+export type DirectLogitechProbeResult =
+  | {
+      model: typeof G502_NAME;
+      protocol: { major: number; minor: number };
+      batteryFeature: "0x1000" | "0x1004";
+      statusKind: "percentage";
+      percentage: number;
+      percentageInRange: true;
+      charging: boolean;
+    }
+  | {
+      model: typeof G502_NAME;
+      statusKind:
+        | "no-supported-endpoint"
+        | "ambiguous-endpoint"
+        | "discovery-unavailable"
+        | "endpoint-unavailable"
+        | "protocol-unsupported"
+        | "battery-feature-unavailable"
+        | "battery-status-unavailable";
+    };
+
 interface Endpoint {
   readonly path: string;
   readonly nativeId: string;
@@ -216,13 +238,9 @@ export class DirectLogitechSource {
         );
       }
 
-      let feature: { index: number };
+      let feature: ResolvedBatteryFeature;
       try {
-        feature = await protocol.getFeature(
-          RECEIVER_DEVICE_INDEX,
-          0x1000,
-          signal
-        );
+        feature = await resolveBatteryFeature(protocol, signal);
       } catch (error) {
         if (isAbort(error)) throw error;
         if (errorMessage(error).includes("feature is unsupported")) {
@@ -234,11 +252,7 @@ export class DirectLogitechSource {
         }
         throw error;
       }
-      const battery = await protocol.getBatteryStatus(
-        RECEIVER_DEVICE_INDEX,
-        feature.index,
-        signal
-      );
+      const battery = await readBatteryFeature(protocol, feature, signal);
       if (!this.isCurrentEndpoint(endpoint)) {
         return unavailableStatus(
           ref,
@@ -273,6 +287,140 @@ export class DirectLogitechSource {
       endpoint.generation === this.discoveryGeneration
     );
   }
+}
+
+/**
+ * Runs the same exact allowlist and named read-only protocol operations as the
+ * provider, but returns only facts safe to record in a hardware QA report.
+ */
+export async function runDirectLogitechProbe(
+  options: DirectLogitechSourceOptions = {}
+): Promise<DirectLogitechProbeResult> {
+  const adapter = options.adapter ?? nodeHidAdapter;
+  const discoveryTimeoutMs =
+    options.discoveryTimeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
+  const openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS;
+  const requestTimeoutMs =
+    options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  let devices: LogitechHidDeviceInfo[];
+  try {
+    devices = await withDeadline(
+      adapter.devicesAsync(),
+      discoveryTimeoutMs,
+      undefined,
+      "Direct HID++ discovery timed out"
+    );
+  } catch {
+    return { model: G502_NAME, statusKind: "discovery-unavailable" };
+  }
+
+  const candidates = devices.flatMap((candidate) => {
+    const path = allowlistedPath(candidate);
+    return path ? [path] : [];
+  });
+  if (candidates.length === 0) {
+    return { model: G502_NAME, statusKind: "no-supported-endpoint" };
+  }
+  if (candidates.length !== 1) {
+    return { model: G502_NAME, statusKind: "ambiguous-endpoint" };
+  }
+
+  const openOperation = adapter.open(candidates[0], { nonExclusive: true });
+  let handle: HidppHandle;
+  try {
+    handle = await withDeadline(
+      openOperation,
+      openTimeoutMs,
+      undefined,
+      "Direct HID++ endpoint open timed out"
+    );
+  } catch {
+    void openOperation.then((lateHandle) => safeClose(lateHandle)).catch(() => {});
+    return { model: G502_NAME, statusKind: "endpoint-unavailable" };
+  }
+
+  try {
+    const protocol = new HidppProtocolClient(handle, { requestTimeoutMs });
+    let version: { major: number; minor: number };
+    try {
+      version = await protocol.getProtocolVersion(RECEIVER_DEVICE_INDEX);
+    } catch {
+      return { model: G502_NAME, statusKind: "protocol-unsupported" };
+    }
+    if (version.major !== 4) {
+      return { model: G502_NAME, statusKind: "protocol-unsupported" };
+    }
+
+    let feature: ResolvedBatteryFeature;
+    try {
+      feature = await resolveBatteryFeature(protocol);
+    } catch {
+      return {
+        model: G502_NAME,
+        statusKind: "battery-feature-unavailable",
+      };
+    }
+
+    try {
+      const battery = await readBatteryFeature(protocol, feature);
+      return {
+        model: G502_NAME,
+        protocol: version,
+        batteryFeature: feature.id === 0x1000 ? "0x1000" : "0x1004",
+        statusKind: "percentage",
+        percentage: battery.percentage,
+        percentageInRange: true,
+        charging: battery.charging,
+      };
+    } catch {
+      return { model: G502_NAME, statusKind: "battery-status-unavailable" };
+    }
+  } finally {
+    await safeClose(handle);
+  }
+}
+
+interface ResolvedBatteryFeature {
+  readonly id: 0x1000 | 0x1004;
+  readonly index: number;
+}
+
+async function resolveBatteryFeature(
+  protocol: HidppProtocolClient,
+  signal?: AbortSignal
+): Promise<ResolvedBatteryFeature> {
+  try {
+    const feature = await protocol.getFeature(
+      RECEIVER_DEVICE_INDEX,
+      0x1000,
+      signal
+    );
+    return { id: 0x1000, index: feature.index };
+  } catch (error) {
+    if (errorMessage(error) !== "HID++ battery feature is unsupported") {
+      throw error;
+    }
+  }
+  const feature = await protocol.getFeature(
+    RECEIVER_DEVICE_INDEX,
+    0x1004,
+    signal
+  );
+  return { id: 0x1004, index: feature.index };
+}
+
+function readBatteryFeature(
+  protocol: HidppProtocolClient,
+  feature: ResolvedBatteryFeature,
+  signal?: AbortSignal
+) {
+  return feature.id === 0x1000
+    ? protocol.getBatteryStatus(RECEIVER_DEVICE_INDEX, feature.index, signal)
+    : protocol.getUnifiedBatteryStatus(
+        RECEIVER_DEVICE_INDEX,
+        feature.index,
+        signal
+      );
 }
 
 function allowlistedPath(device: LogitechHidDeviceInfo): string | null {

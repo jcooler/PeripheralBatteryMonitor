@@ -1,4 +1,4 @@
-import { access, cp, mkdir, readFile, rm } from "node:fs/promises";
+import { access, cp, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +33,6 @@ for (const [packageName, files] of Object.entries(runtimeFiles)) {
   const source = join(sourceModules, packageName);
   const target = join(targetModules, packageName);
   await assertPackage(source, packageName);
-  await rm(target, { recursive: true, force: true });
   await mkdir(target, { recursive: true });
   for (const file of files) {
     const destination = join(target, file);
@@ -41,7 +40,22 @@ for (const [packageName, files] of Object.entries(runtimeFiles)) {
     await cp(join(source, file), destination, {
       recursive: true,
       force: true,
+      filter: copyOnlyChangedFiles,
     });
+  }
+}
+
+async function copyOnlyChangedFiles(source, destination) {
+  const sourceStats = await stat(source);
+  if (sourceStats.isDirectory()) return true;
+  try {
+    const [sourceBytes, destinationBytes] = await Promise.all([
+      readFile(source),
+      readFile(destination),
+    ]);
+    return !sourceBytes.equals(destinationBytes);
+  } catch {
+    return true;
   }
 }
 

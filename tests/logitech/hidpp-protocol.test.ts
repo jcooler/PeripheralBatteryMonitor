@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HidppProtocolClient,
   buildBatteryStatusRequest,
+  buildUnifiedBatteryStatusRequest,
   buildRootFeatureRequest,
   buildRootProtocolVersionRequest,
   type HidppHandle,
@@ -49,6 +50,17 @@ describe("HID++ allowlisted request packets", () => {
       Buffer.from([0x11, 0x01, 0x05, 0x08, ...Array(16).fill(0)])
     );
   });
+
+  it("pins feature 0x1004 lookup and its status function 1 so the additional battery-only fallback cannot become a generic request", () => {
+    expect(buildRootFeatureRequest(1, 8, 0x1004)).toEqual(
+      Buffer.from([
+        0x11, 0x01, 0x00, 0x08, 0x10, 0x04, ...Array(14).fill(0),
+      ])
+    );
+    expect(buildUnifiedBatteryStatusRequest(1, 8, 0x06)).toEqual(
+      Buffer.from([0x11, 0x01, 0x06, 0x18, ...Array(16).fill(0)])
+    );
+  });
 });
 
 describe("HidppProtocolClient correlated responses", () => {
@@ -80,6 +92,20 @@ describe("HidppProtocolClient correlated responses", () => {
       nextLevel: 70,
       charging: false,
       status: 0,
+    });
+  });
+
+  it("parses feature 0x1004 function 1 with the same validated percentage and charging semantics", async () => {
+    const reply = Buffer.from([
+      0x11, 0x01, 0x06, 0x18, 68, 60, 1, ...Array(13).fill(0),
+    ]);
+    const client = new HidppProtocolClient(fakeHandle([reply]));
+
+    await expect(client.getUnifiedBatteryStatus(1, 0x06)).resolves.toEqual({
+      percentage: 68,
+      nextLevel: 60,
+      charging: true,
+      status: 1,
     });
   });
 
@@ -182,6 +208,19 @@ describe("HidppProtocolClient correlated responses", () => {
 
     await expect(client.getBatteryStatus(1, 0x05)).rejects.toThrow(
       "HID++ request timed out"
+    );
+  });
+
+  it("retries the same allowlisted read-only packet once after timeout", async () => {
+    const handle = fakeHandle([undefined, batteryReply]);
+    const client = new HidppProtocolClient(handle);
+
+    await expect(client.getBatteryStatus(1, 0x05)).resolves.toMatchObject({
+      percentage: 73,
+    });
+    expect(handle.write).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(handle.write).mock.calls[1][0]).toEqual(
+      buildBatteryStatusRequest(1, 8, 0x05)
     );
   });
 

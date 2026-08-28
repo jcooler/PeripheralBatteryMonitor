@@ -5,6 +5,7 @@ const ROOT_GET_FEATURE_FUNCTION = 0x00;
 const ROOT_GET_PROTOCOL_VERSION_FUNCTION = 0x01;
 const BATTERY_STATUS_FUNCTION = 0x00;
 const BATTERY_UNIFIED_LEVEL_STATUS_FEATURE = 0x1000;
+const UNIFIED_BATTERY_FEATURE = 0x1004;
 const HIDPP20_ERROR_FEATURE_INDEX = 0xff;
 const DEFAULT_SOFTWARE_ID = 0x08;
 const DEFAULT_REQUEST_TIMEOUT_MS = 1_000;
@@ -54,7 +55,10 @@ export function buildRootFeatureRequest(
   softwareId: number,
   featureId: number
 ): Buffer {
-  if (featureId !== BATTERY_UNIFIED_LEVEL_STATUS_FEATURE) {
+  if (
+    featureId !== BATTERY_UNIFIED_LEVEL_STATUS_FEATURE &&
+    featureId !== UNIFIED_BATTERY_FEATURE
+  ) {
     throw new Error("HID++ feature is not allowlisted");
   }
   return buildLongRequest(
@@ -78,6 +82,23 @@ export function buildBatteryStatusRequest(
     deviceIndex,
     featureIndex,
     BATTERY_STATUS_FUNCTION,
+    softwareId,
+    []
+  );
+}
+
+export function buildUnifiedBatteryStatusRequest(
+  deviceIndex: number,
+  softwareId: number,
+  featureIndex: number
+): Buffer {
+  if (!isByte(featureIndex) || featureIndex === ROOT_FEATURE_INDEX) {
+    throw new Error("HID++ battery feature index is invalid");
+  }
+  return buildLongRequest(
+    deviceIndex,
+    featureIndex,
+    0x01,
     softwareId,
     []
   );
@@ -160,21 +181,28 @@ export class HidppProtocolClient {
       ),
       signal
     );
-    const percentage = response[4];
-    const nextLevel = response[5];
-    const status = response[6];
-    if (percentage > 100 || nextLevel > 100) {
-      throw new Error("HID++ battery percentage is invalid");
-    }
-    if (status > 4) {
-      throw new Error("HID++ battery status is unavailable");
-    }
-    return {
-      percentage,
-      nextLevel,
-      charging: status === 1 || status === 2 || status === 4,
-      status,
-    };
+    return parseBatteryReading(response);
+  }
+
+  async getUnifiedBatteryStatus(
+    deviceIndex: number,
+    featureIndex: number,
+    signal?: AbortSignal
+  ): Promise<HidppBatteryReading> {
+    const response = await this.sendCorrelated(
+      request(
+        deviceIndex,
+        featureIndex,
+        0x01,
+        buildUnifiedBatteryStatusRequest(
+          deviceIndex,
+          this.softwareId,
+          featureIndex
+        )
+      ),
+      signal
+    );
+    return parseBatteryReading(response);
   }
 
   private sendCorrelated(
@@ -196,30 +224,57 @@ export class HidppProtocolClient {
     signal?: AbortSignal
   ): Promise<Buffer> {
     throwIfAborted(signal);
-    await raceWithAbortAndTimeout(
-      this.handle.write(hidppRequest.packet),
-      signal,
-      this.requestTimeoutMs
-    );
-    const deadline = this.now() + this.requestTimeoutMs;
-    while (true) {
-      throwIfAborted(signal);
-      const remaining = deadline - this.now();
-      if (remaining <= 0) throw timeoutError();
-      const report = await raceWithAbortAndTimeout(
-        this.handle.read(remaining),
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await raceWithAbortAndTimeout(
+        this.handle.write(hidppRequest.packet),
         signal,
-        remaining
+        this.requestTimeoutMs
       );
-      if (report === undefined) throw timeoutError();
-      if (isCorrelatedError(report, hidppRequest, this.softwareId)) {
-        throw new Error(`HID++ request failed with error ${report[5]}`);
-      }
-      if (isCorrelatedReply(report, hidppRequest, this.softwareId)) {
-        return report;
+      const deadline = this.now() + this.requestTimeoutMs;
+      while (true) {
+        throwIfAborted(signal);
+        const remaining = deadline - this.now();
+        if (remaining <= 0) break;
+        let report: Buffer | undefined;
+        try {
+          report = await raceWithAbortAndTimeout(
+            this.handle.read(remaining),
+            signal,
+            remaining
+          );
+        } catch (error) {
+          if (errorMessage(error) === "HID++ request timed out") break;
+          throw error;
+        }
+        if (report === undefined) break;
+        if (isCorrelatedError(report, hidppRequest, this.softwareId)) {
+          throw new Error(`HID++ request failed with error ${report[5]}`);
+        }
+        if (isCorrelatedReply(report, hidppRequest, this.softwareId)) {
+          return report;
+        }
       }
     }
+    throw timeoutError();
   }
+}
+
+function parseBatteryReading(response: Buffer): HidppBatteryReading {
+  const percentage = response[4];
+  const nextLevel = response[5];
+  const status = response[6];
+  if (percentage > 100 || nextLevel > 100) {
+    throw new Error("HID++ battery percentage is invalid");
+  }
+  if (status > 4) {
+    throw new Error("HID++ battery status is unavailable");
+  }
+  return {
+    percentage,
+    nextLevel,
+    charging: status === 1 || status === 2 || status === 4,
+    status,
+  };
 }
 
 function request(
@@ -317,6 +372,10 @@ function abortError(): Error {
 
 function timeoutError(): Error {
   return new Error("HID++ request timed out");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function raceWithAbortAndTimeout<T>(
