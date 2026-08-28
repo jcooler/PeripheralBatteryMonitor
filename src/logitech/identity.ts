@@ -24,6 +24,21 @@ export function mapLogitechDeviceType(type: string | undefined): string {
   return type?.trim() || "Device";
 }
 
+export function makeLogitechModelIdentity(
+  displayName: string,
+  deviceType: string | undefined
+): { nativeId: string; physicalId: string } | null {
+  const trimmedName = displayName.trim();
+  if (!trimmedName) return null;
+  const name = normalizeIdentityText(trimmedName);
+  const type = normalizeIdentityText(mapLogitechDeviceType(deviceType));
+  const nativeId = `model:${name}|${type}`;
+  return {
+    nativeId,
+    physicalId: `logitech-model:${nativeId}`,
+  };
+}
+
 export function identifyLogitechDevices(
   devices: readonly GHubDevice[]
 ): LogitechIdentityResult {
@@ -93,9 +108,9 @@ function serialIdentity(device: GHubDevice): string | null {
 }
 
 function modelFingerprint(device: GHubDevice): string | null {
-  const displayName = device.extendedDisplayName?.trim();
-  if (!displayName) return null;
-  const name = normalizeIdentityText(displayName);
-  const type = normalizeIdentityText(mapLogitechDeviceType(device.deviceType));
-  return `model:${name}|${type}`;
+  const identity = makeLogitechModelIdentity(
+    device.extendedDisplayName ?? "",
+    device.deviceType
+  );
+  return identity?.nativeId ?? null;
 }

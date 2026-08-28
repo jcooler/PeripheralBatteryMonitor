@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   identifyLogitechDevices,
+  makeLogitechModelIdentity,
   normalizeIdentityText,
 } from "../../src/logitech/identity";
 import type { GHubDevice } from "../../src/logitech/client";
@@ -17,6 +18,19 @@ function device(overrides: Partial<GHubDevice> = {}): GHubDevice {
 }
 
 describe("Logitech persistent identities", () => {
+  it("builds the direct G502 model identity with the same normalization as G Hub", () => {
+    expect(
+      makeLogitechModelIdentity(
+        " G502 X PLUS Wireless   Gaming Mouse ",
+        "mouse"
+      )
+    ).toEqual({
+      nativeId: "model:g502 x plus wireless gaming mouse|mouse",
+      physicalId:
+        "logitech-model:model:g502 x plus wireless gaming mouse|mouse",
+    });
+  });
+
   it("normalizes identity text with trim, NFC, whitespace collapse, and locale-independent lowercase", () => {
     expect(normalizeIdentityText("  G502\u00a0X   PLUS  ")).toBe("g502 x plus");
     expect(normalizeIdentityText("  Cafe\u0301\tPRO  ")).toBe("caf\u00e9 pro");
