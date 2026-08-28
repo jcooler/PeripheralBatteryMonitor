@@ -86,6 +86,7 @@ interface RuntimeStatusSummary {
   deviceKey: string;
   state: "connected" | "disconnected" | "unavailable";
   batteryText: string;
+  source?: "Direct HID++" | "G Hub fallback";
 }
 
 interface ContextRuntimeSummary {
@@ -406,15 +407,33 @@ function sanitizeRuntimeStatus(
   deviceKey: string,
   status: BatteryStatus
 ): RuntimeStatusSummary {
+  const withSource = (
+    summary: RuntimeStatusSummary
+  ): RuntimeStatusSummary => {
+    const source = trustedLogitechSource(status);
+    return source ? { ...summary, source } : summary;
+  };
   if (status.state === "disconnected") {
-    return { deviceKey, state: "disconnected", batteryText: "Disconnected" };
+    return withSource({
+      deviceKey,
+      state: "disconnected",
+      batteryText: "Disconnected",
+    });
   }
   if (status.state === "unavailable" || status.level.kind === "unavailable") {
-    return { deviceKey, state: "unavailable", batteryText: "Unavailable" };
+    return withSource({
+      deviceKey,
+      state: "unavailable",
+      batteryText: "Unavailable",
+    });
   }
   if (status.level.kind === "percentage") {
     const percentage = Math.round(Math.max(0, Math.min(100, status.level.value)));
-    return { deviceKey, state: "connected", batteryText: `${percentage}%` };
+    return withSource({
+      deviceKey,
+      state: "connected",
+      batteryText: `${percentage}%`,
+    });
   }
   const qualitativeLabels = {
     empty: "Empty",
@@ -422,11 +441,20 @@ function sanitizeRuntimeStatus(
     medium: "Medium",
     full: "Full",
   } as const;
-  return {
+  return withSource({
     deviceKey,
     state: "connected",
     batteryText: qualitativeLabels[status.level.value],
-  };
+  });
+}
+
+function trustedLogitechSource(
+  status: BatteryStatus
+): RuntimeStatusSummary["source"] {
+  if (status.provider !== "logitech") return undefined;
+  if (status.detail === "Direct HID++") return "Direct HID++";
+  if (status.detail === "G Hub fallback") return "G Hub fallback";
+  return undefined;
 }
 
 function iconOptions(settings: NormalizedBatterySettings): IconOptions {

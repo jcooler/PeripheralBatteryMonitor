@@ -68,6 +68,24 @@ describe("Property Inspector browser layout", () => {
     }
   });
 
+  it("shows compact trusted Logitech source labels without exposing arbitrary runtime text", async () => {
+    const { context, page } = await openFixturePage(browser, origin, fixture);
+    try {
+      expect(await page.locator(".provider-label").allTextContents()).toContain(
+        "Logitech"
+      );
+      expect(await page.locator(".source-label").allTextContents()).toEqual([
+        "Direct HID++",
+        "G Hub fallback",
+      ]);
+      expect(await page.locator(".device-list").textContent()).not.toContain(
+        "private-runtime-source"
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
   it.each([250, 280, 360])("keeps selected-row controls contained and error-free at %ipx", async (width) => {
     const { context, page, browserErrors } = await openFixturePage(
       browser,

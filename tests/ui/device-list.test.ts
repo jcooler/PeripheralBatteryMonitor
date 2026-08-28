@@ -57,6 +57,24 @@ const adapterController = {
   deviceType: "Controller",
 };
 
+const logitechMouse = {
+  key: "logitech:model%3Ag502%20x%20plus%20wireless%20gaming%20mouse%7Cmouse",
+  provider: "logitech",
+  providerLabel: "untrusted label",
+  nativeId: "model:g502 x plus wireless gaming mouse|mouse",
+  name: "G502 X Plus",
+  deviceType: "Mouse",
+};
+
+const logitechKeyboard = {
+  key: "logitech:model%3Ag915%7Ckeyboard",
+  provider: "logitech",
+  providerLabel: "untrusted label",
+  nativeId: "model:g915|keyboard",
+  name: "G915",
+  deviceType: "Keyboard",
+};
+
 describe("Property Inspector device-list model", () => {
   it("shows selected devices first in configured order and marks only the first as initial", () => {
     const rows = buildDeviceRows(
@@ -306,7 +324,7 @@ describe("Property Inspector device-list model", () => {
       "Windows Bluetooth",
       "Windows Gamepad",
       "XInput",
-      "Logitech G Hub",
+      "Logitech",
       "HID",
     ]);
   });
@@ -702,6 +720,51 @@ describe("Property Inspector device-list model", () => {
     expect(collectText(list)).toContain("Disconnected");
     expect(collectText(list)).toContain("Unavailable");
     expect(collectText(list)).not.toContain("99%");
+  });
+
+  it("renders only trusted Logitech source labels beside the public provider label", () => {
+    const rows = buildDeviceRows(
+      [logitechMouse, logitechKeyboard, windowsKeyboard],
+      [logitechMouse, logitechKeyboard, windowsKeyboard],
+      {
+        currentDeviceKey: logitechMouse.key,
+        statuses: [
+          {
+            deviceKey: logitechMouse.key,
+            state: "connected",
+            batteryText: "73%",
+            source: "Direct HID++",
+          },
+          {
+            deviceKey: logitechKeyboard.key,
+            state: "connected",
+            batteryText: "48%",
+            source: "G Hub fallback",
+          },
+          {
+            deviceKey: windowsKeyboard.key,
+            state: "connected",
+            batteryText: "80%",
+            source: '<img src=x onerror="globalThis.pwned=true">',
+          },
+        ],
+      }
+    );
+    const document = new FakeDocument();
+    const list = document.createElement("ol");
+
+    renderDeviceList(list, rows, { onIncluded() {}, onReorder() {} });
+
+    expect(findByClass(list, "provider-label").map((node) => node.textContent)).toEqual([
+      "Logitech",
+      "Logitech",
+      "Windows Bluetooth",
+    ]);
+    expect(findByClass(list, "source-label").map((node) => node.textContent)).toEqual([
+      "Direct HID++",
+      "G Hub fallback",
+    ]);
+    expect(collectText(list)).not.toContain("onerror");
   });
 
   it("keeps runtime summaries out of persisted settings", () => {

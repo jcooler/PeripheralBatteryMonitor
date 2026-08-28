@@ -3,7 +3,7 @@ const PROVIDER_LABELS = Object.freeze({
   windows: "Windows Bluetooth",
   "windows-gamepad": "Windows Gamepad",
   xinput: "XInput",
-  logitech: "Logitech G Hub",
+  logitech: "Logitech",
   hid: "HID",
 });
 
@@ -461,6 +461,13 @@ export function renderDeviceList(container, rows, handlers) {
     provider.textContent = row.device.providerLabel;
     metadata.append(provider);
 
+    if (row.runtimeStatus?.source) {
+      const source = document.createElement("span");
+      source.className = "source-label";
+      source.textContent = row.runtimeStatus.source;
+      metadata.append(source);
+    }
+
     if (row.current) {
       const current = document.createElement("span");
       current.className = "current-label";
@@ -766,6 +773,9 @@ function normalizeRuntimePayload(payload) {
       statuses.set(value.deviceKey, {
         state: value.state,
         batteryText: value.batteryText,
+        ...(value.source === "Direct HID++" || value.source === "G Hub fallback"
+          ? { source: value.source }
+          : {}),
       });
     }
   }

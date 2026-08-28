@@ -410,7 +410,17 @@ describe("BatteryAction Stream Deck adapter", () => {
   });
 
   it("sends fixed runtime battery summaries without exposing unavailable details", async () => {
-    const percentageDevice = steelSeriesDevice();
+    const percentageDevice: DeviceRef = {
+      key: makeDeviceKey(
+        "logitech",
+        "model:g502 x plus wireless gaming mouse|mouse"
+      ),
+      provider: "logitech",
+      providerLabel: "Logitech",
+      nativeId: "model:g502 x plus wireless gaming mouse|mouse",
+      name: "G502 X Plus",
+      deviceType: "Mouse",
+    };
     const qualitativeDevice = windowsKeyboard();
     const unavailableDevice: DeviceRef = {
       key: makeDeviceKey("xinput", "slot:0"),
@@ -453,9 +463,10 @@ describe("BatteryAction Stream Deck adapter", () => {
         state: "connected",
         level: { kind: "percentage", value: 72 },
         charging: false,
-        provider: "steelseries",
-        providerLabel: "SteelSeries GG",
+        provider: "logitech",
+        providerLabel: "Logitech",
         observedAt: 1,
+        detail: "Direct HID++",
       },
       settings,
     });
@@ -491,7 +502,7 @@ describe("BatteryAction Stream Deck adapter", () => {
       event: "deviceRuntimeStatus",
       currentDeviceKey: unavailableDevice.key,
       statuses: [
-        { deviceKey: percentageDevice.key, state: "connected", batteryText: "72%" },
+        { deviceKey: percentageDevice.key, state: "connected", batteryText: "72%", source: "Direct HID++" },
         { deviceKey: qualitativeDevice.key, state: "connected", batteryText: "Low" },
         { deviceKey: unavailableDevice.key, state: "unavailable", batteryText: "Unavailable" },
       ],

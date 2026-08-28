@@ -7,7 +7,7 @@
       {
         "key": "logitech:serial%3AG502X-PLUS-001",
         "provider": "logitech",
-        "providerLabel": "Logitech G Hub",
+        "providerLabel": "Logitech",
         "nativeId": "serial:G502X-PLUS-001",
         "name": "G502 X Plus",
         "deviceType": "Mouse"
@@ -15,7 +15,7 @@
       {
         "key": "logitech:model%3Amx%20keys%20s%20wireless%20illuminated%20keyboard%20with%20a%20deliberately%20long%20display%20name%7Ckeyboard",
         "provider": "logitech",
-        "providerLabel": "Logitech G Hub",
+        "providerLabel": "Logitech",
         "nativeId": "model:mx keys s wireless illuminated keyboard with a deliberately long display name|keyboard",
         "name": "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
         "deviceType": "Keyboard"
@@ -45,7 +45,7 @@
       {
         "key": "logitech:serial%3AG502X-PLUS-001",
         "provider": "logitech",
-        "providerLabel": "Logitech G Hub",
+        "providerLabel": "Logitech",
         "nativeId": "serial:G502X-PLUS-001",
         "name": "G502 X Plus",
         "deviceType": "Mouse"
@@ -53,7 +53,7 @@
       {
         "key": "logitech:model%3Amx%20keys%20s%20wireless%20illuminated%20keyboard%20with%20a%20deliberately%20long%20display%20name%7Ckeyboard",
         "provider": "logitech",
-        "providerLabel": "Logitech G Hub",
+        "providerLabel": "Logitech",
         "nativeId": "model:mx keys s wireless illuminated keyboard with a deliberately long display name|keyboard",
         "name": "MX Keys S Wireless Illuminated Keyboard With A Deliberately Long Display Name",
         "deviceType": "Keyboard"
@@ -87,17 +87,20 @@
       {
         "deviceKey": "logitech:serial%3AG502X-PLUS-001",
         "state": "connected",
-        "batteryText": "72%"
+        "batteryText": "72%",
+        "source": "Direct HID++"
       },
       {
         "deviceKey": "logitech:model%3Amx%20keys%20s%20wireless%20illuminated%20keyboard%20with%20a%20deliberately%20long%20display%20name%7Ckeyboard",
         "state": "disconnected",
-        "batteryText": "Disconnected"
+        "batteryText": "Disconnected",
+        "source": "G Hub fallback"
       },
       {
         "deviceKey": "steelseries:404",
         "state": "unavailable",
-        "batteryText": "Unavailable"
+        "batteryText": "Unavailable",
+        "source": "private-runtime-source"
       }
     ]
   },

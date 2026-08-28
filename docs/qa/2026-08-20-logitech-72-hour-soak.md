@@ -1,6 +1,6 @@
 # Logitech 72-hour beta soak checklist
 
-This checklist is the remaining owner-controlled hardware gate for Logitech beta readiness. Automated tests and browser QA do not close the intermittent hardware defect. Do not mark the defect closed, install or replace the live plugin, or submit to Marketplace until the owner completes and accepts this soak.
+This checklist is the remaining owner-controlled hardware gate for Logitech beta readiness. Automated tests, a bounded direct-HID++ probe, and browser QA do not close an intermittent multi-day hardware defect. A development plugin may be reloaded for this manual test, but do not mark the defect closed or submit to Marketplace until the owner completes and accepts this soak.
 
 ## Run record
 
@@ -8,6 +8,7 @@ This checklist is the remaining owner-controlled hardware gate for Logitech beta
 - Plugin version: ____________________
 - Stream Deck version: ____________________
 - G Hub version: ____________________
+- Direct HID++ probe commit/result: ____________________
 - Windows version: ____________________
 - G502 X Plus connection mode at start: ____________________
 - MX Keys connection mode at start: ____________________
@@ -20,6 +21,14 @@ Record a timestamp and result for every scenario. Use `PASS`, `FAIL`, or `BLOCKE
 
 ## Required scenarios
 
+For every G502 observation, record the source shown in the Property Inspector. `Direct HID++` is expected when the allowlisted endpoint answers; `G Hub fallback` is expected only when direct status is unavailable and G Hub can answer.
+
+| Timestamp with time zone | Connection mode | G Hub endpoint available, YES/NO | Displayed source | Percentage or unavailable state | Sleep/wake result | Duplicate row, YES/NO | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+|  |  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |  |
+|  |  |  |  |  |  |  |  |
+
 ### 1. G502 X Plus plus MX Keys order retention
 
 Configure G502 X Plus first and MX Keys second, close the Property Inspector, reopen it, cycle both devices, and repeat after at least one ordinary Stream Deck restart. Confirm consecutive order numbers and the same initial active device.
@@ -29,9 +38,9 @@ Configure G502 X Plus first and MX Keys second, close the Property Inspector, re
 - Observed order and active device: ____________________
 - Notes or evidence: ____________________
 
-### 2. G Hub restart
+### 2. G Hub restart and fallback boundary
 
-With the Property Inspector closed and the plugin displaying the configured G502 X Plus, exit and restart G Hub. Do not reopen the Property Inspector. Confirm the plugin recovers through a regenerated current endpoint and resumes the same configured identity.
+With the Property Inspector closed and the plugin displaying the configured G502 X Plus, exit and restart G Hub. Do not reopen the Property Inspector. Confirm direct HID++ remains usable when available. If direct access is unavailable, confirm G Hub fallback regenerates its current endpoint and resumes the same configured identity without creating a duplicate row.
 
 - Timestamp with time zone: ____________________
 - Result: ____________________
@@ -70,7 +79,7 @@ Begin with the configured G502 X Plus connected by cable, then disconnect the ca
 
 ### 6. Stream Deck before G Hub startup
 
-Start Stream Deck while G Hub is not running, observe the honest unavailable state, then start G Hub without reopening the Property Inspector. Confirm the configured G502 X Plus and MX Keys recover in their saved order.
+Start Stream Deck while G Hub is not running. Confirm the G502 X Plus uses `Direct HID++` when its receiver answers; otherwise observe an honest unavailable state. Then start G Hub without reopening the Property Inspector. Confirm any fallback-only Logitech devices recover in their saved order and the G502 row is not duplicated.
 
 - Stream Deck startup timestamp with time zone: ____________________
 - G Hub startup timestamp with time zone: ____________________
