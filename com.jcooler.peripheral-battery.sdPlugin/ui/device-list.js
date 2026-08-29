@@ -487,6 +487,13 @@ export function renderDeviceList(container, rows, handlers) {
         battery.textContent = row.runtimeStatus.batteryText;
         metadata.append(battery);
       }
+
+      if (row.runtimeStatus.freshness === "last-known") {
+        const freshness = document.createElement("span");
+        freshness.className = "freshness-label";
+        freshness.textContent = formatLastSeenAge(row.runtimeStatus.observedAt);
+        metadata.append(freshness);
+      }
     } else if (!row.available) {
       const unavailable = document.createElement("span");
       unavailable.className = "availability-label";
@@ -759,6 +766,7 @@ function uniqueDevices(values, preferredKeys = new Set()) {
 
 function normalizeRuntimePayload(payload) {
   const statuses = new Map();
+  const now = Date.now();
   if (Array.isArray(payload?.statuses)) {
     for (const value of payload.statuses) {
       if (
@@ -770,9 +778,24 @@ function normalizeRuntimePayload(payload) {
       ) {
         continue;
       }
+      const hasFreshnessFields =
+        Object.hasOwn(value, "freshness") || Object.hasOwn(value, "observedAt");
+      const lastKnown =
+        value.freshness === "last-known" &&
+        value.state === "connected" &&
+        /^~(?:100|[1-9]?\d)%$/.test(value.batteryText) &&
+        typeof value.observedAt === "number" &&
+        Number.isFinite(value.observedAt) &&
+        value.observedAt >= 0 &&
+        value.observedAt <= now &&
+        now - value.observedAt <= 30 * 24 * 60 * 60 * 1_000;
+      if (hasFreshnessFields && !lastKnown) continue;
       statuses.set(value.deviceKey, {
         state: value.state,
         batteryText: value.batteryText,
+        ...(lastKnown
+          ? { freshness: "last-known", observedAt: value.observedAt }
+          : {}),
         ...(value.source === "Direct HID++" || value.source === "G Hub fallback"
           ? { source: value.source }
           : {}),
@@ -786,6 +809,15 @@ function normalizeRuntimePayload(payload) {
         : null,
     statuses,
   };
+}
+
+export function formatLastSeenAge(observedAt, now = Date.now()) {
+  const ageMs = Math.max(0, now - observedAt);
+  const minutes = Math.floor(ageMs / (60 * 1_000));
+  if (minutes < 60) return `Last seen ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Last seen ${hours}h ago`;
+  return `Last seen ${Math.floor(hours / 24)}d ago`;
 }
 
 function connectionLabel(state) {

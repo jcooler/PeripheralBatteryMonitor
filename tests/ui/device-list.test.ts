@@ -9,6 +9,7 @@ import {
   createInspectorController,
   describeDiscoveryState,
   displaySettingsPatch,
+  formatLastSeenAge,
   mergeSettings,
   moveSelectedDevice,
   reorderSelectedDevice,
@@ -720,6 +721,84 @@ describe("Property Inspector device-list model", () => {
     expect(collectText(list)).toContain("Disconnected");
     expect(collectText(list)).toContain("Unavailable");
     expect(collectText(list)).not.toContain("99%");
+  });
+
+  it("formats trusted last-seen ages at minute, hour, and day boundaries", () => {
+    const now = 1_800_000_000_000;
+
+    expect(formatLastSeenAge(now - 15 * 60 * 1_000, now)).toBe("Last seen 15m ago");
+    expect(formatLastSeenAge(now - 23 * 60 * 1_000, now)).toBe("Last seen 23m ago");
+    expect(formatLastSeenAge(now - 59 * 60 * 1_000, now)).toBe("Last seen 59m ago");
+    expect(formatLastSeenAge(now - 60 * 60 * 1_000, now)).toBe("Last seen 1h ago");
+    expect(formatLastSeenAge(now - 23 * 60 * 60 * 1_000, now)).toBe("Last seen 23h ago");
+    expect(formatLastSeenAge(now - 24 * 60 * 60 * 1_000, now)).toBe("Last seen 1d ago");
+    expect(formatLastSeenAge(now - 30 * 24 * 60 * 60 * 1_000, now)).toBe("Last seen 30d ago");
+  });
+
+  it("accepts only complete connected last-known runtime statuses and renders their trusted freshness text", () => {
+    const observedAt = Date.now() - 15 * 60 * 1_000;
+    const rows = buildDeviceRows(
+      [windowsKeyboard, steelSeriesMouse, xinputController],
+      [windowsKeyboard, steelSeriesMouse, xinputController],
+      {
+        statuses: [
+          {
+            deviceKey: windowsKeyboard.key,
+            state: "connected",
+            batteryText: "~85%",
+            freshness: "last-known",
+            observedAt,
+          },
+          {
+            deviceKey: steelSeriesMouse.key,
+            state: "disconnected",
+            batteryText: "~72%",
+            freshness: "last-known",
+            observedAt,
+          },
+          {
+            deviceKey: xinputController.key,
+            state: "connected",
+            batteryText: "85%",
+            freshness: "last-known",
+            observedAt,
+          },
+        ],
+      }
+    );
+    const document = new FakeDocument();
+    const list = document.createElement("ol");
+
+    renderDeviceList(list, rows, { onIncluded() {}, onReorder() {} });
+
+    expect(rows[0].runtimeStatus).toMatchObject({
+      batteryText: "~85%",
+      freshness: "last-known",
+      observedAt,
+    });
+    expect(rows.slice(1).map((row) => row.runtimeStatus)).toEqual([null, null]);
+    expect(findByClass(list, "freshness-label").map((node) => node.textContent)).toEqual([
+      "Last seen 15m ago",
+    ]);
+  });
+
+  it("rejects a last-known runtime status when any required field is malformed", () => {
+    const now = Date.now();
+    const rows = buildDeviceRows(
+      [windowsKeyboard, steelSeriesMouse, xinputController, logitechMouse, logitechKeyboard],
+      [windowsKeyboard, steelSeriesMouse, xinputController, logitechMouse, logitechKeyboard],
+      {
+        statuses: [
+          { deviceKey: windowsKeyboard.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: Number.NaN },
+          { deviceKey: steelSeriesMouse.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: -1 },
+          { deviceKey: xinputController.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: now + 24 * 60 * 60 * 1_000 },
+          { deviceKey: logitechMouse.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: now - 31 * 24 * 60 * 60 * 1_000 },
+          { deviceKey: logitechKeyboard.key, state: "connected", batteryText: "~0%", freshness: "fresh", observedAt: now },
+        ],
+      }
+    );
+
+    expect(rows.map((row) => row.runtimeStatus)).toEqual([null, null, null, null, null]);
   });
 
   it("renders only trusted Logitech source labels beside the public provider label", () => {

@@ -199,12 +199,14 @@
       .device-metadata {
         display: flex;
         align-items: center;
-        gap: 6px;
+        flex-wrap: wrap;
+        column-gap: 6px;
+        row-gap: 2px;
         min-width: 0;
         margin-top: 2px;
         color: var(--muted);
         font-size: 10px;
-        overflow: hidden;
+        overflow: visible;
       }
 
       .provider-label {
@@ -234,6 +236,12 @@
         flex: 0 0 auto;
         color: var(--text);
         font: 600 10px/1 Consolas, "SFMono-Regular", monospace;
+      }
+
+      .freshness-label {
+        flex: 0 0 auto;
+        color: #d6a84b;
+        white-space: nowrap;
       }
 
       .remove-device {

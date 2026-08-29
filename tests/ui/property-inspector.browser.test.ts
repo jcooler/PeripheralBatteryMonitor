@@ -86,6 +86,69 @@ describe("Property Inspector browser layout", () => {
     }
   });
 
+  it.each([250, 280, 360, 1280])("renders trusted freshness labels without overflow at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(
+      browser,
+      origin,
+      freshnessFixture(),
+      900,
+      width
+    );
+    try {
+      const layout = await page.evaluate(() => {
+        const selectedRows = [...document.querySelectorAll<HTMLElement>(
+          ".device-row-selected"
+        )];
+        const ids = [...document.querySelectorAll<HTMLElement>("[id]")].map(
+          (element) => element.id
+        );
+        return {
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+          freshness: selectedRows.map((row) => ({
+            name: row.querySelector(".device-name")?.textContent,
+            text: row.querySelector(".freshness-label")?.textContent,
+            visible: row.querySelector<HTMLElement>(".freshness-label")?.checkVisibility(),
+          })),
+          controlsContained: selectedRows.every((row) => {
+            const position = row.querySelector<HTMLElement>(".cycle-position")!
+              .getBoundingClientRect();
+            const identity = row.querySelector<HTMLElement>(".device-identity")!
+              .getBoundingClientRect();
+            const remove = row.querySelector<HTMLElement>(".remove-device")!
+              .getBoundingClientRect();
+            const grip = row.querySelector<HTMLElement>(".drag-grip")!
+              .getBoundingClientRect();
+            return (
+              position.left >= 0 &&
+              position.right <= identity.left &&
+              identity.right <= grip.left &&
+              grip.right <= document.documentElement.clientWidth &&
+              remove.left >= identity.left &&
+              remove.right <= identity.right
+            );
+          }),
+          duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
+          injectedElements: document.querySelectorAll(
+            ".device-list img, .device-list svg, .status-bar script"
+          ).length,
+        };
+      });
+
+      expect(layout.scrollWidth).toBe(layout.clientWidth);
+      expect(layout.freshness).toEqual([
+        { name: "Apex Pro", text: "Last seen 23m ago", visible: true },
+        { name: "Arctis Nova 7", text: "Last seen 3d ago", visible: true },
+      ]);
+      expect(layout.controlsContained).toBe(true);
+      expect(layout.duplicateIds).toEqual([]);
+      expect(layout.injectedElements).toBe(0);
+      expect(browserErrors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
   it.each([250, 280, 360])("keeps selected-row controls contained and error-free at %ipx", async (width) => {
     const { context, page, browserErrors } = await openFixturePage(
       browser,
@@ -430,17 +493,64 @@ async function openFixturePage(
   }, fixture);
   await page.waitForFunction(() => globalThis.__fixtureSocket()?.readyState === 1);
   await page.evaluate((state) => {
+    const runtime = state.lastKnownAges
+      ? {
+          ...state.runtime,
+          statuses: state.runtime.statuses.map((status: Record<string, any>) => ({
+            ...status,
+            freshness: "last-known",
+            observedAt: Date.now() - state.lastKnownAges[status.deviceKey],
+          })),
+        }
+      : state.runtime;
     globalThis.__fixtureSocket().receive({
       event: "sendToPropertyInspector",
       payload: state.discovery,
     });
     globalThis.__fixtureSocket().receive({
       event: "sendToPropertyInspector",
-      payload: state.runtime,
+      payload: runtime,
     });
   }, fixture);
   await page.locator(".device-row-selected").first().waitFor({ state: "visible" });
   return { context, page, browserErrors };
+}
+
+function freshnessFixture(): Record<string, any> {
+  const apex = {
+    key: "steelseries:apex-pro",
+    provider: "steelseries",
+    providerLabel: "SteelSeries GG",
+    nativeId: "apex-pro",
+    name: "Apex Pro",
+    deviceType: "Keyboard",
+  };
+  const arctis = {
+    key: "steelseries:arctis-nova-7",
+    provider: "steelseries",
+    providerLabel: "SteelSeries GG",
+    nativeId: "arctis-nova-7",
+    name: "Arctis Nova 7",
+    deviceType: "Headset",
+  };
+  return {
+    action: "com.jcooler.peripheral-battery.monitor",
+    context: "freshness-property-inspector-context",
+    settings: { schemaVersion: 2, selectedDevices: [apex, arctis] },
+    discovery: { event: "deviceList", state: "success", devices: [apex, arctis] },
+    runtime: {
+      event: "deviceRuntimeStatus",
+      currentDeviceKey: apex.key,
+      statuses: [
+        { deviceKey: apex.key, state: "connected", batteryText: "~85%" },
+        { deviceKey: arctis.key, state: "connected", batteryText: "~72%" },
+      ],
+    },
+    lastKnownAges: {
+      [apex.key]: 23 * 60 * 1_000,
+      [arctis.key]: 3 * 24 * 60 * 60 * 1_000,
+    },
+  };
 }
 
 async function centerOf(locator: ReturnType<Page["locator"]>): Promise<{ x: number; y: number }> {
