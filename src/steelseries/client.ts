@@ -13,6 +13,10 @@ import {
   type DeviceRef,
 } from "../devices/types";
 import type { BatteryInfo } from "../types";
+import type {
+  SteelSeriesBatteryCacheEntry,
+  SteelSeriesBatteryCacheStore,
+} from "./battery-cache";
 import type { CoreProps, DevicesResponse, SteelSeriesDevice } from "./types";
 
 const PROVIDER_ID = "steelseries" as const;
@@ -21,7 +25,14 @@ const RECONNECT_DELAY_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
 const LIVE_DATA_MAX_AGE_MS = 15 * 60 * 1_000;
+const BATTERY_HISTORY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_NAME_LENGTH = 160;
+const MAX_TYPE_LENGTH = 80;
+const SAFE_DISPLAY_METADATA_PATTERN = /^[\p{L}\p{N} .+'()&_/-]+$/u;
+const SENSITIVE_DISPLAY_METADATA_PATTERN =
+  /(?:\b(?:https?|wss?|file):\/\/|(?:^|\s)[A-Za-z]:[\\/]|\\\\|\/(?:dev|sys|proc|usb|hidraw)(?:[\\/]|$)|\b(?:hid|usb)(?:[:#\\/]|[_-]?vid|[_-][0-9a-f]{4}(?:[_-]|$))|\b(?:vid|pid)[_:= -]?[0-9a-f]{4}\b|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b|\bserial(?=[A-Za-z0-9])|\b(?:serial|s\/n|sn)[_:= -]+[A-Za-z0-9]|\bsn(?=\d))/i;
+const CACHE_WARNING = "SteelSeries battery cache unavailable";
 
 const DEFAULT_CORE_PROPS_PATHS = [
   join(
@@ -59,7 +70,7 @@ export interface SteelSeriesSocket {
   send?(data: unknown): void;
 }
 
-interface SteelSeriesClientOptions {
+export interface SteelSeriesClientOptions {
   corePropsPaths?: string[];
   readTextFile?: (path: string) => Promise<string>;
   httpGet?: SteelSeriesHttpGetter;
@@ -70,6 +81,8 @@ interface SteelSeriesClientOptions {
   now?: () => number;
   liveDataMaxAgeMs?: number;
   handshakeTimeoutMs?: number;
+  batteryCache?: SteelSeriesBatteryCacheStore;
+  diagnosticSink?: { warn(message: string): void };
 }
 
 interface LiveBattery {
@@ -174,13 +187,18 @@ export class SteelSeriesClient implements DeviceProvider {
   private readonly now: () => number;
   private readonly liveDataMaxAgeMs: number;
   private readonly handshakeTimeoutMs: number;
+  private readonly batteryCache: SteelSeriesBatteryCacheStore | undefined;
+  private readonly diagnosticSink: { warn(message: string): void } | undefined;
 
   private encryptedAddress: string | null = null;
   private initialized = false;
   private initPromise: Promise<boolean> | null = null;
   private cachedDevices = new Map<string, SteelSeriesDevice>();
   private inventoryWasDiscovered = false;
-  private batteryData = new Map<string, LiveBattery>();
+  private liveBatteryData = new Map<string, LiveBattery>();
+  private cachedBatteryData = new Map<string, SteelSeriesBatteryCacheEntry>();
+  private batteryCacheHydration: Promise<void> | null = null;
+  private batteryTombstones = new Set<string>();
   private connectionData = new Map<string, boolean>();
   private headsetConnectionData = new Map<string, string>();
   private connectionEventSequence = 0;
@@ -205,6 +223,8 @@ export class SteelSeriesClient implements DeviceProvider {
     this.liveDataMaxAgeMs = options.liveDataMaxAgeMs ?? LIVE_DATA_MAX_AGE_MS;
     this.handshakeTimeoutMs =
       options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    this.batteryCache = options.batteryCache;
+    this.diagnosticSink = options.diagnosticSink;
   }
 
   async initialize(): Promise<boolean> {
@@ -234,6 +254,7 @@ export class SteelSeriesClient implements DeviceProvider {
   }
 
   async readStatus(ref: DeviceRef): Promise<BatteryStatus> {
+    await this.ensureBatteryCacheHydrated();
     if (
       ref.provider !== PROVIDER_ID ||
       ref.key !== makeDeviceKey(PROVIDER_ID, ref.nativeId)
@@ -266,11 +287,8 @@ export class SteelSeriesClient implements DeviceProvider {
       };
     }
 
-    const battery = this.batteryData.get(String(device.id));
-    if (
-      !battery ||
-      this.now() - battery.observedAt > this.liveDataMaxAgeMs
-    ) {
+    const battery = this.newestBattery(String(device.id));
+    if (!battery) {
       return unavailableStatus(
         ref,
         this.now(),
@@ -278,13 +296,15 @@ export class SteelSeriesClient implements DeviceProvider {
       );
     }
 
+    const isFresh = this.now() - battery.observedAt <= this.liveDataMaxAgeMs;
     return {
       state: "connected",
       level: { kind: "percentage", value: battery.level },
-      charging: battery.charging,
+      charging: isFresh ? battery.charging : null,
       provider: PROVIDER_ID,
       providerLabel: PROVIDER_LABEL,
       observedAt: battery.observedAt,
+      ...(isFresh ? {} : { freshness: "last-known" as const }),
     };
   }
 
@@ -331,7 +351,10 @@ export class SteelSeriesClient implements DeviceProvider {
     socket?.close();
     this.cachedDevices.clear();
     this.inventoryWasDiscovered = false;
-    this.clearLiveData();
+    this.liveBatteryData.clear();
+    this.cachedBatteryData.clear();
+    this.batteryTombstones.clear();
+    this.clearConnectionEvidence();
     this.initialized = false;
     this.encryptedAddress = null;
   }
@@ -368,6 +391,7 @@ export class SteelSeriesClient implements DeviceProvider {
   }
 
   private async fetchDevices(signal?: AbortSignal): Promise<SteelSeriesDevice[]> {
+    await this.ensureBatteryCacheHydrated();
     const ready = await this.initialize();
     if (!ready || !this.encryptedAddress) {
       throw new Error("SteelSeries GG unavailable");
@@ -394,15 +418,14 @@ export class SteelSeriesClient implements DeviceProvider {
       throw new Error("SteelSeries GG returned an invalid device list");
     }
 
-    const candidates = payload.devices
-      .filter(isSteelSeriesDevice)
-      .filter(hasBatteryCapability);
+    const validInventory = payload.devices.filter(isSteelSeriesDevice);
     const identityCounts = new Map<number, number>();
-    for (const device of candidates) {
+    for (const device of validInventory) {
       identityCounts.set(device.id, (identityCounts.get(device.id) ?? 0) + 1);
     }
-    const batteryDevices = candidates.filter(
-      (device) => identityCounts.get(device.id) === 1
+    const batteryDevices = validInventory.filter(
+      (device) =>
+        hasBatteryCapability(device) && identityCounts.get(device.id) === 1
     );
     for (const device of batteryDevices) {
       const nativeId = String(device.id);
@@ -411,12 +434,38 @@ export class SteelSeriesClient implements DeviceProvider {
         this.connectionData.delete(nativeId);
         this.headsetConnectionData.delete(nativeId);
         this.connectionEventSequences.delete(nativeId);
-        if (device.connected === 0) this.batteryData.delete(nativeId);
+        if (device.connected === 0) this.discardBattery(nativeId);
       }
     }
-    this.cachedDevices = new Map(
+    const nextDevices = new Map(
       batteryDevices.map((device) => [String(device.id), device])
     );
+    this.cachedDevices = nextDevices;
+    for (const [id, count] of identityCounts) {
+      const nativeId = String(id);
+      const device = nextDevices.get(nativeId);
+      if (count !== 1 || device === undefined) {
+        if (
+          this.liveBatteryData.has(nativeId) ||
+          this.cachedBatteryData.has(nativeId)
+        ) {
+          this.discardBattery(nativeId);
+        }
+        continue;
+      }
+      const metadata = exactBatteryMetadata(device);
+      const cached = this.cachedBatteryData.get(nativeId);
+      if (
+        device.connected === 0 ||
+        (cached !== undefined &&
+          (cached.name !== metadata.name ||
+            cached.deviceType !== metadata.deviceType))
+      ) {
+        this.discardBattery(nativeId);
+        continue;
+      }
+      this.persistValidatedLiveBattery(device);
+    }
     this.inventoryWasDiscovered = true;
     return batteryDevices;
   }
@@ -499,7 +548,7 @@ export class SteelSeriesClient implements DeviceProvider {
     this.lifecycleGeneration += 1;
     this.discoveryGeneration += 1;
     this.cachedDevices.clear();
-    this.clearLiveData();
+    this.clearConnectionEvidence();
     this.scheduleReconnect();
   }
 
@@ -533,7 +582,8 @@ export class SteelSeriesClient implements DeviceProvider {
       const level = data.battery_status.level;
       const charging = data.battery_status.charging;
       if (isPercentage(level)) {
-        this.batteryData.set(nativeId, {
+        this.batteryTombstones.delete(nativeId);
+        this.liveBatteryData.set(nativeId, {
           level,
           charging: typeof charging === "number" ? charging === 1 : null,
           observedAt: this.now(),
@@ -544,8 +594,9 @@ export class SteelSeriesClient implements DeviceProvider {
     if (isRecord(data.batteryEvent)) {
       const level = data.batteryEvent.batteryPercent;
       if (isPercentage(level)) {
-        const existing = this.batteryData.get(nativeId);
-        this.batteryData.set(nativeId, {
+        const existing = this.liveBatteryData.get(nativeId);
+        this.batteryTombstones.delete(nativeId);
+        this.liveBatteryData.set(nativeId, {
           level,
           charging: existing?.charging ?? null,
           observedAt: this.now(),
@@ -555,11 +606,11 @@ export class SteelSeriesClient implements DeviceProvider {
 
     if (isRecord(data.connection_status)) {
       const status = data.connection_status.status;
-      if (typeof status === "number") {
+      if (status === 0 || status === 1) {
         const connected = status === 1;
         this.recordConnectionEvent(nativeId);
         this.connectionData.set(nativeId, connected);
-        if (!connected) this.batteryData.delete(nativeId);
+        if (!connected) this.discardBattery(nativeId);
       }
     }
 
@@ -569,18 +620,21 @@ export class SteelSeriesClient implements DeviceProvider {
         this.recordConnectionEvent(nativeId);
         this.headsetConnectionData.set(nativeId, status);
         if (!isConnectedHeadsetState(status)) {
-          this.batteryData.delete(nativeId);
+          this.discardBattery(nativeId);
         }
       }
     }
 
     if (isRecord(data.chargingEvent)) {
       const status = data.chargingEvent.chargingStatus;
-      const existing = this.batteryData.get(nativeId);
+      const existing = this.liveBatteryData.get(nativeId);
       if (existing && typeof status === "string") {
         existing.charging = status === "PLUGGED_IN_CHARGING";
       }
     }
+
+    const device = this.cachedDevices.get(nativeId);
+    if (device) this.persistValidatedLiveBattery(device);
   }
 
   private isConnected(device: SteelSeriesDevice): boolean {
@@ -606,11 +660,10 @@ export class SteelSeriesClient implements DeviceProvider {
     this.encryptedAddress = null;
     this.initPromise = null;
     this.cachedDevices.clear();
-    this.clearLiveData();
+    this.clearConnectionEvidence();
   }
 
-  private clearLiveData(): void {
-    this.batteryData.clear();
+  private clearConnectionEvidence(): void {
     this.connectionData.clear();
     this.headsetConnectionData.clear();
     this.connectionEventSequence = 0;
@@ -620,6 +673,97 @@ export class SteelSeriesClient implements DeviceProvider {
   private recordConnectionEvent(nativeId: string): void {
     this.connectionEventSequence += 1;
     this.connectionEventSequences.set(nativeId, this.connectionEventSequence);
+  }
+
+  private newestBattery(
+    nativeId: string
+  ): SteelSeriesBatteryCacheEntry | undefined {
+    if (this.batteryTombstones.has(nativeId)) return undefined;
+    const device = this.cachedDevices.get(nativeId);
+    if (!device) return undefined;
+    const metadata = exactBatteryMetadata(device);
+
+    const live = this.liveBatteryData.get(nativeId);
+    const liveEntry = live
+      ? { nativeId, ...metadata, ...live }
+      : undefined;
+    const cached = this.cachedBatteryData.get(nativeId);
+    const cachedEntry =
+      cached && cached.name === metadata.name && cached.deviceType === metadata.deviceType
+        ? cached
+        : undefined;
+    const newest =
+      liveEntry && (!cachedEntry || liveEntry.observedAt >= cachedEntry.observedAt)
+        ? liveEntry
+        : cachedEntry;
+    if (!newest) return undefined;
+    if (this.now() - newest.observedAt > BATTERY_HISTORY_MAX_AGE_MS) {
+      this.discardBattery(nativeId);
+      return undefined;
+    }
+    return newest;
+  }
+
+  private persistValidatedLiveBattery(device: SteelSeriesDevice): void {
+    if (!this.batteryCache || !hasBatteryCapability(device)) return;
+    const nativeId = String(device.id);
+    if (
+      this.cachedDevices.get(nativeId) !== device ||
+      this.batteryTombstones.has(nativeId) ||
+      !this.isConnected(device)
+    ) {
+      return;
+    }
+    const metadata = batteryMetadata(device);
+    const live = this.liveBatteryData.get(nativeId);
+    if (!metadata || !live) return;
+    const entry: SteelSeriesBatteryCacheEntry = {
+      nativeId,
+      ...metadata,
+      ...live,
+    };
+    if (!isValidBatteryCacheEntry(entry, this.now())) return;
+    void this.batteryCache.upsert(entry).catch(() => this.warnCacheUnavailable());
+  }
+
+  private discardBattery(nativeId: string): void {
+    this.liveBatteryData.delete(nativeId);
+    this.cachedBatteryData.delete(nativeId);
+    if (this.batteryTombstones.has(nativeId)) return;
+    this.batteryTombstones.add(nativeId);
+    if (this.batteryCache) {
+      void this.batteryCache.remove(nativeId).catch(() => this.warnCacheUnavailable());
+    }
+  }
+
+  private ensureBatteryCacheHydrated(): Promise<void> {
+    if (!this.batteryCache) return Promise.resolve();
+    if (this.batteryCacheHydration) return this.batteryCacheHydration;
+    this.batteryCacheHydration = this.batteryCache
+      .load()
+      .then((entries) => {
+        const now = this.now();
+        for (const candidate of entries) {
+          const nativeId = validBatteryCacheNativeId(candidate?.nativeId)
+            ? candidate.nativeId
+            : undefined;
+          if (!isValidBatteryCacheEntry(candidate, now)) {
+            if (nativeId !== undefined) this.discardBattery(nativeId);
+            continue;
+          }
+          if (this.batteryTombstones.has(candidate.nativeId)) continue;
+          const live = this.liveBatteryData.get(candidate.nativeId);
+          if (!live || candidate.observedAt > live.observedAt) {
+            this.cachedBatteryData.set(candidate.nativeId, { ...candidate });
+          }
+        }
+      })
+      .catch(() => this.warnCacheUnavailable());
+    return this.batteryCacheHydration;
+  }
+
+  private warnCacheUnavailable(): void {
+    this.diagnosticSink?.warn(CACHE_WARNING);
   }
 
   private scheduleReconnect(): void {
@@ -666,6 +810,75 @@ function toDescriptor(device: SteelSeriesDevice): DeviceDescriptor {
     name: device.display_name || device.name,
     deviceType: device.deviceTypeName || String(device.type),
   };
+}
+
+function batteryMetadata(
+  device: SteelSeriesDevice
+): Pick<SteelSeriesBatteryCacheEntry, "name" | "deviceType"> | undefined {
+  const { name, deviceType } = exactBatteryMetadata(device);
+  if (
+    !validDisplayMetadata(name, MAX_NAME_LENGTH) ||
+    !validDisplayMetadata(deviceType, MAX_TYPE_LENGTH)
+  ) {
+    return undefined;
+  }
+  return { name, deviceType };
+}
+
+function exactBatteryMetadata(
+  device: SteelSeriesDevice
+): Pick<SteelSeriesBatteryCacheEntry, "name" | "deviceType"> {
+  return {
+    name: device.display_name || device.name,
+    deviceType: device.deviceTypeName || String(device.type),
+  };
+}
+
+function validDisplayMetadata(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    value.trim() === value &&
+    SAFE_DISPLAY_METADATA_PATTERN.test(value) &&
+    !SENSITIVE_DISPLAY_METADATA_PATTERN.test(value)
+  );
+}
+
+function validBatteryCacheNativeId(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value)) {
+    return false;
+  }
+  return Number.isSafeInteger(Number(value));
+}
+
+function isValidBatteryCacheEntry(
+  value: unknown,
+  now: number
+): value is SteelSeriesBatteryCacheEntry {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (
+    keys.length !== 6 ||
+    keys.join(",") !== "charging,deviceType,level,name,nativeId,observedAt"
+  ) {
+    return false;
+  }
+  return (
+    validBatteryCacheNativeId(value.nativeId) &&
+    validDisplayMetadata(value.name, MAX_NAME_LENGTH) &&
+    validDisplayMetadata(value.deviceType, MAX_TYPE_LENGTH) &&
+    typeof value.level === "number" &&
+    Number.isInteger(value.level) &&
+    value.level >= 0 &&
+    value.level <= 100 &&
+    (value.charging === true || value.charging === false || value.charging === null) &&
+    typeof value.observedAt === "number" &&
+    Number.isFinite(value.observedAt) &&
+    value.observedAt >= 0 &&
+    value.observedAt <= now &&
+    now - value.observedAt <= BATTERY_HISTORY_MAX_AGE_MS
+  );
 }
 
 function matchesConfiguredMetadata(

@@ -42,6 +42,7 @@ export interface BatteryStatus {
   provider: ProviderId;
   providerLabel: string;
   observedAt: number;
+  freshness?: "last-known";
   detail?: string;
 }
 
