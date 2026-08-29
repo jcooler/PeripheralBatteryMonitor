@@ -87,6 +87,36 @@ describe("battery status icons", () => {
     expect(svg).toContain("SteelSeries GG");
   });
 
+  it("visibly distinguishes a last-known percentage from a fresh charging reading", () => {
+    const lastKnownSvg = decode(generateBatteryIcon({
+      deviceId: 1,
+      deviceName: "Aerox",
+      deviceType: "Mouse",
+      batteryLevel: 85,
+      isCharging: true,
+      isConnected: true,
+      isLastKnown: true,
+      providerLabel: "SteelSeries GG",
+    }, { showStatusText: true }));
+    const freshSvg = decode(generateBatteryIcon({
+      deviceId: 1,
+      deviceName: "Aerox",
+      deviceType: "Mouse",
+      batteryLevel: 85,
+      isCharging: true,
+      isConnected: true,
+      providerLabel: "SteelSeries GG",
+    }, { showStatusText: true }));
+
+    expect(lastKnownSvg).toContain("~85%");
+    expect(lastKnownSvg).toContain("Last known");
+    expect(lastKnownSvg).not.toContain("SteelSeries GG");
+    expect(lastKnownSvg).not.toContain("<polygon");
+    expect(freshSvg).toContain("85%");
+    expect(freshSvg).toContain("SteelSeries GG");
+    expect(freshSvg).toContain("<polygon");
+  });
+
   it("renders XInput's qualitative state without inventing a percentage", () => {
     const svg = decode(generateQualitativeBatteryIcon({
       deviceName: "Xbox Controller",

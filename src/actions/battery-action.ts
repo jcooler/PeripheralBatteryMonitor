@@ -86,6 +86,8 @@ interface RuntimeStatusSummary {
   deviceKey: string;
   state: "connected" | "disconnected" | "unavailable";
   batteryText: string;
+  freshness?: "last-known";
+  observedAt?: number;
   source?: "Direct HID++" | "G Hub fallback";
 }
 
@@ -354,7 +356,8 @@ export class BatteryAction extends SingletonAction<BatteryActionSettings> {
       deviceName: device.name,
       deviceType: device.deviceType,
       batteryLevel: status.level.value,
-      isCharging: status.charging === true,
+      isCharging: status.freshness === "last-known" ? false : status.charging === true,
+      isLastKnown: status.freshness === "last-known",
       isConnected: true,
       providerLabel: status.providerLabel,
     };
@@ -429,10 +432,18 @@ function sanitizeRuntimeStatus(
   }
   if (status.level.kind === "percentage") {
     const percentage = Math.round(Math.max(0, Math.min(100, status.level.value)));
+    const isSafeLastKnown =
+      status.freshness === "last-known" &&
+      Number.isFinite(status.observedAt) &&
+      status.observedAt >= 0 &&
+      status.observedAt <= Date.now();
     return withSource({
       deviceKey,
       state: "connected",
-      batteryText: `${percentage}%`,
+      batteryText: `${isSafeLastKnown ? "~" : ""}${percentage}%`,
+      ...(isSafeLastKnown
+        ? { freshness: "last-known", observedAt: status.observedAt }
+        : {}),
     });
   }
   const qualitativeLabels = {

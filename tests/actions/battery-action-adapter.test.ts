@@ -5,6 +5,7 @@ import type { SessionRender } from "../../src/actions/action-session";
 import { BatteryRuntime } from "../../src/actions/battery-runtime";
 import { InspectorMessenger } from "../../src/actions/inspector-messenger";
 import type { DeviceCatalog } from "../../src/devices/catalog";
+import * as iconGenerator from "../../src/utils/icon-generator";
 import {
   makeDeviceKey,
   type BatteryStatus,
@@ -509,6 +510,159 @@ describe("BatteryAction Stream Deck adapter", () => {
     });
     expect(JSON.stringify(sent)).not.toContain("secret path");
     expect(JSON.stringify(sent)).not.toContain("onerror");
+  });
+
+  it("presents a last-known percentage and exposes only safe freshness metadata", async () => {
+    const observedAt = 5_000;
+    const knownDevice = steelSeriesDevice();
+    const secondaryDevice: DeviceRef = {
+      ...knownDevice,
+      key: makeDeviceKey("steelseries", "secondary"),
+      nativeId: "secondary",
+    };
+    const settings = {
+      selectedDevices: [knownDevice, secondaryDevice],
+      pollInterval: 30,
+      showPercentage: true,
+      showDeviceType: false,
+      showDeviceName: false,
+      showStatusText: true,
+      deviceTypeFontSize: 13,
+      backgroundColor: "#0d1117",
+    };
+    const fakeRuntime = runtime(Promise.resolve({ devices: [knownDevice, secondaryDevice], errors: [], refreshedAt: 1 }));
+    const handle = actionHandle({ schemaVersion: 2, selectedDevices: [knownDevice, secondaryDevice] });
+    const sent: any[] = [];
+    const action = new BatteryAction({
+      runtime: fakeRuntime,
+      inspector: new InspectorMessenger({
+        activeContextId: () => "context-1",
+        send: async (message) => { sent.push(message); },
+      }),
+    });
+    const iconSpy = vi.spyOn(iconGenerator, "generateBatteryIcon");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const render = (device: DeviceRef, status: BatteryStatus) =>
+      (action as unknown as {
+        render(contextId: string, render: SessionRender): Promise<void>;
+      }).render("context-1", { kind: "status", device, status, settings });
+
+    try {
+      await action.onWillAppear({
+        action: handle,
+        payload: { settings: { schemaVersion: 2, selectedDevices: [knownDevice, secondaryDevice] } },
+      } as never);
+      await render(knownDevice, {
+        state: "connected",
+        level: { kind: "percentage", value: 85 },
+        charging: true,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt,
+        freshness: "last-known",
+      });
+
+      expect(iconSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ batteryLevel: 85, isCharging: false, isLastKnown: true }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(decodeIcon(vi.mocked(handle.setImage).mock.calls.at(-1)?.[0] ?? "")).toContain("~85%");
+      expect(sent.at(-1).statuses).toContainEqual({
+        deviceKey: "steelseries:42",
+        state: "connected",
+        batteryText: "~85%",
+        freshness: "last-known",
+        observedAt,
+      });
+
+      const statusDevice = (nativeId: string): DeviceRef => ({
+        ...knownDevice,
+        key: makeDeviceKey("steelseries", nativeId),
+        nativeId,
+      });
+      const freshDevice = statusDevice("fresh");
+      const unavailableDevice = statusDevice("unavailable");
+      const disconnectedDevice = statusDevice("disconnected");
+      const qualitativeDevice = statusDevice("qualitative");
+      const futureDevice = statusDevice("future");
+      const negativeDevice = statusDevice("negative");
+      const nonFiniteDevice = statusDevice("non-finite");
+      await render(freshDevice, {
+        state: "connected",
+        level: { kind: "percentage", value: 84 },
+        charging: false,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt,
+      });
+      await render(unavailableDevice, {
+        state: "unavailable",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt,
+        freshness: "last-known",
+      });
+      await render(disconnectedDevice, {
+        state: "disconnected",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt,
+        freshness: "last-known",
+      });
+      await render(qualitativeDevice, {
+        state: "connected",
+        level: { kind: "qualitative", value: "medium" },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt,
+        freshness: "last-known",
+      });
+      await render(futureDevice, {
+        state: "connected",
+        level: { kind: "percentage", value: 83 },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: 10_001,
+        freshness: "last-known",
+      });
+      await render(negativeDevice, {
+        state: "connected",
+        level: { kind: "percentage", value: 82 },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: -1,
+        freshness: "last-known",
+      });
+      await render(nonFiniteDevice, {
+        state: "connected",
+        level: { kind: "percentage", value: 81 },
+        charging: null,
+        provider: "steelseries",
+        providerLabel: "SteelSeries GG",
+        observedAt: Number.NaN,
+        freshness: "last-known",
+      });
+
+      const statuses = sent.at(-1).statuses;
+      expect(statuses).toContainEqual({ deviceKey: freshDevice.key, state: "connected", batteryText: "84%" });
+      expect(statuses).toContainEqual({ deviceKey: unavailableDevice.key, state: "unavailable", batteryText: "Unavailable" });
+      expect(statuses).toContainEqual({ deviceKey: disconnectedDevice.key, state: "disconnected", batteryText: "Disconnected" });
+      expect(statuses).toContainEqual({ deviceKey: qualitativeDevice.key, state: "connected", batteryText: "Medium" });
+      expect(statuses).toContainEqual({ deviceKey: futureDevice.key, state: "connected", batteryText: "83%" });
+      expect(statuses).toContainEqual({ deviceKey: negativeDevice.key, state: "connected", batteryText: "82%" });
+      expect(statuses).toContainEqual({ deviceKey: nonFiniteDevice.key, state: "connected", batteryText: "81%" });
+    } finally {
+      nowSpy.mockRestore();
+      iconSpy.mockRestore();
+    }
   });
 
   it.each([

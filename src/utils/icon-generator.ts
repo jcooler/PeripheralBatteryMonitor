@@ -58,7 +58,7 @@ export function generateBatteryIcon(
   const bottomLabel1 = o.showDeviceName;
   const bottomLabel2 =
     o.showStatusText &&
-    (info.isCharging || level <= 15 || Boolean(info.providerLabel));
+    (info.isLastKnown || info.isCharging || level <= 15 || Boolean(info.providerLabel));
 
   // Battery vertical center shifts based on labels
   const topOffset = topLabel ? 14 : 0;
@@ -85,7 +85,7 @@ export function generateBatteryIcon(
   // Charging bolt centered in battery
   const boltCx = bx + bw / 2;
   const boltCy = by + bh / 2;
-  const bolt = info.isCharging
+  const bolt = info.isCharging && !info.isLastKnown
     ? `<polygon points="${boltCx + 8},${boltCy - 12} ${boltCx - 4},${boltCy + 2} ${boltCx + 4},${boltCy + 2} ${boltCx - 2},${boltCy + 16} ${boltCx + 14},${boltCy - 2} ${boltCx + 5},${boltCy - 2}" fill="#FFD700" stroke="#B8860B" stroke-width="1"/>`
     : "";
 
@@ -98,10 +98,12 @@ export function generateBatteryIcon(
     ? `<text x="72" y="${by + bh + 16}" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#8b949e">${esc(truncate(info.deviceName, 20))}</text>`
     : "";
 
-  const statusParts = [
-    info.isCharging ? "Charging" : level <= 15 ? "Low Battery" : "",
-    info.providerLabel ?? "",
-  ].filter(Boolean);
+  const statusParts = info.isLastKnown
+    ? ["Last known"]
+    : [
+      info.isCharging ? "Charging" : level <= 15 ? "Low Battery" : "",
+      info.providerLabel ?? "",
+    ].filter(Boolean);
   const statusLabel = bottomLabel2
     ? `<text x="72" y="${by + bh + (bottomLabel1 ? 30 : 16)}" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="${color}">${esc(truncate(statusParts.join(" · "), 28))}</text>`
     : "";
@@ -110,7 +112,7 @@ export function generateBatteryIcon(
   const battCenterX = bx + bw / 2;
   const battCenterY = by + bh / 2 + 9;
   const pctText = o.showPercentage
-    ? `<text x="${battCenterX}" y="${battCenterY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="white">${level}%</text>`
+    ? `<text x="${battCenterX}" y="${battCenterY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="white">${info.isLastKnown ? "~" : ""}${level}%</text>`
     : "";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">
