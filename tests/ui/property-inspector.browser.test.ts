@@ -149,6 +149,111 @@ describe("Property Inspector browser layout", () => {
     }
   });
 
+  it.each([250, 280, 360, 1280])("mouse drag reorders selected rows at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
+    try {
+      const names = await selectedNames(page);
+      await page.locator("#refreshBtn").focus();
+      await page.locator(".drag-grip").first().dragTo(
+        page.locator(".device-row-selected").nth(2)
+      );
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual([names[1], names[2], names[0]]);
+      expect(await page.locator(".cycle-position").allTextContents()).toEqual(["1", "2", "3"]);
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it.each([250, 280, 360, 1280])("keyboard Alt+Arrow reorders selected rows at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
+    try {
+      const names = await selectedNames(page);
+      const row = page.locator(".device-row-selected").first();
+      await row.focus();
+      await row.press("Alt+ArrowDown");
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual([names[1], names[0], names[2]]);
+      expect(await page.locator(".cycle-position").allTextContents()).toEqual(["1", "2", "3"]);
+      expect(await page.evaluate(() =>
+        document.activeElement?.querySelector(".device-name")?.textContent
+      )).toBe(names[0]);
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it.each([250, 280, 360, 1280])("long-press touch drag reorders selected rows at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
+    try {
+      const names = await selectedNames(page);
+      await page.locator("#refreshBtn").focus();
+      const firstGrip = await centerOf(page.locator(".drag-grip").first());
+      const thirdRow = await centerOf(page.locator(".device-row-selected").nth(2));
+      await dispatchTouchGesture(page, {
+        start: firstGrip,
+        end: { x: thirdRow.x, y: thirdRow.y },
+        holdMs: 800,
+        moveSteps: 6,
+      });
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual([names[1], names[2], names[0]]);
+      expect(await page.locator(".cycle-position").allTextContents()).toEqual(["1", "2", "3"]);
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  }, 15_000);
+
+  it.each([250, 280, 360, 1280])("keyboard Remove removes a selected row at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
+    try {
+      const names = await selectedNames(page);
+      const remove = page.locator(".remove-device").first();
+      await remove.focus();
+      await remove.press("Enter");
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual(names.slice(1));
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it.each([250, 280, 360, 1280])("touch Remove removes a selected row at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
+    try {
+      const names = await selectedNames(page);
+      await page.locator(".remove-device").nth(1).tap();
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual([names[0], names[2]]);
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it.each([250, 280, 360, 1280])("mouse Remove removes a selected row at %ipx", async (width) => {
+    const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
+    try {
+      const names = await selectedNames(page);
+      await page.locator(".remove-device").nth(2).click();
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual(names.slice(0, 2));
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  });
+
   it.each([250, 280, 360])("keeps selected-row controls contained and error-free at %ipx", async (width) => {
     const { context, page, browserErrors } = await openFixturePage(
       browser,
@@ -551,6 +656,33 @@ function freshnessFixture(): Record<string, any> {
       [arctis.key]: 3 * 24 * 60 * 60 * 1_000,
     },
   };
+}
+
+async function selectedNames(page: Page): Promise<string[]> {
+  return page.locator(".device-row-selected .device-name").allTextContents();
+}
+
+async function expectPersistedSettings(page: Page, count: number): Promise<void> {
+  await expect.poll(() => page.evaluate(() =>
+    globalThis.__fixtureSocket().sent.filter((message) => message.event === "setSettings").length
+  )).toBe(count);
+}
+
+async function expectHealthyInspector(page: Page, browserErrors: string[]): Promise<void> {
+  const dimensions = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    duplicateIds: [...document.querySelectorAll<HTMLElement>("[id]")]
+      .map((element) => element.id)
+      .filter((id, index, ids) => ids.indexOf(id) !== index),
+    injectedElements: document.querySelectorAll(
+      ".device-list img, .device-list svg, .status-bar script"
+    ).length,
+  }));
+  expect(dimensions.scrollWidth).toBe(dimensions.clientWidth);
+  expect(dimensions.duplicateIds).toEqual([]);
+  expect(dimensions.injectedElements).toBe(0);
+  expect(browserErrors).toEqual([]);
 }
 
 async function centerOf(locator: ReturnType<Page["locator"]>): Promise<{ x: number; y: number }> {
