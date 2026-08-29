@@ -137,8 +137,8 @@ describe("Property Inspector browser layout", () => {
 
       expect(layout.scrollWidth).toBe(layout.clientWidth);
       expect(layout.freshness).toEqual([
-        { name: "Apex Pro", text: "Last seen 23m ago", visible: true },
-        { name: "Arctis Nova 7", text: "Last seen 3d ago", visible: true },
+        { name: "Apex Pro TKL Wireless", text: "Last seen 23m ago", visible: true },
+        { name: "Arctis Nova Pro Wireless", text: "Last seen 3d ago", visible: true },
       ]);
       expect(layout.controlsContained).toBe(true);
       expect(layout.duplicateIds).toEqual([]);
@@ -148,6 +148,67 @@ describe("Property Inspector browser layout", () => {
       await context.close();
     }
   });
+
+  it.each([
+    { mode: "mouse", width: 1280 },
+    { mode: "keyboard", width: 360 },
+    { mode: "touch", width: 250 },
+  ] as const)("$mode reorder preserves full last-known rows at $width px", async ({ mode, width }) => {
+    const { context, page, browserErrors } = await openFixturePage(
+      browser,
+      origin,
+      freshnessFixture(),
+      900,
+      width
+    );
+    try {
+      expect(await selectedNames(page)).toEqual([
+        "Apex Pro TKL Wireless",
+        "Arctis Nova Pro Wireless",
+      ]);
+      expect(await page.locator(".freshness-label").allTextContents()).toEqual([
+        "Last seen 23m ago",
+        "Last seen 3d ago",
+      ]);
+      expect(await page.locator(".freshness-label").evaluateAll((labels) =>
+        labels.every((label) => (label as HTMLElement).checkVisibility())
+      )).toBe(true);
+
+      const firstRow = page.locator(".device-row-selected").first();
+      if (mode === "mouse") {
+        await page.locator("#refreshBtn").focus();
+        await firstRow.locator(".drag-grip").dragTo(
+          page.locator(".device-row-selected").nth(1)
+        );
+      } else if (mode === "keyboard") {
+        await firstRow.focus();
+        await firstRow.press("Alt+ArrowDown");
+      } else {
+        await page.locator("#refreshBtn").focus();
+        const firstGrip = await centerOf(firstRow.locator(".drag-grip"));
+        const secondRow = await centerOf(page.locator(".device-row-selected").nth(1));
+        await dispatchTouchGesture(page, {
+          start: firstGrip,
+          end: secondRow,
+          holdMs: 800,
+          moveSteps: 6,
+        });
+      }
+
+      await expectPersistedSettings(page, 1);
+      expect(await selectedNames(page)).toEqual([
+        "Arctis Nova Pro Wireless",
+        "Apex Pro TKL Wireless",
+      ]);
+      expect(await page.locator(".freshness-label").allTextContents()).toEqual([
+        "Last seen 3d ago",
+        "Last seen 23m ago",
+      ]);
+      await expectHealthyInspector(page, browserErrors);
+    } finally {
+      await context.close();
+    }
+  }, 15_000);
 
   it.each([250, 280, 360, 1280])("mouse drag reorders selected rows at %ipx", async (width) => {
     const { context, page, browserErrors } = await openFixturePage(browser, origin, fixture, 900, width);
@@ -623,19 +684,19 @@ async function openFixturePage(
 
 function freshnessFixture(): Record<string, any> {
   const apex = {
-    key: "steelseries:apex-pro",
+    key: "steelseries:330",
     provider: "steelseries",
     providerLabel: "SteelSeries GG",
-    nativeId: "apex-pro",
-    name: "Apex Pro",
+    nativeId: "330",
+    name: "Apex Pro TKL Wireless",
     deviceType: "Keyboard",
   };
   const arctis = {
-    key: "steelseries:arctis-nova-7",
+    key: "steelseries:245",
     provider: "steelseries",
     providerLabel: "SteelSeries GG",
-    nativeId: "arctis-nova-7",
-    name: "Arctis Nova 7",
+    nativeId: "245",
+    name: "Arctis Nova Pro Wireless",
     deviceType: "Headset",
   };
   return {

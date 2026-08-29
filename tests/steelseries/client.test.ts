@@ -718,23 +718,88 @@ describe("passive SteelSeries GG client", () => {
     });
   });
 
-  it("fails closed for an unknown headset connection state", async () => {
-    const { client, sockets } = setup();
-    const [, headset] = await client.discover();
+  it("retains history but stays unavailable for an unknown headset state until later exact evidence", async () => {
+    const clock = { value: 4_000_000_000 };
+    const batteryCache = fakeBatteryCache([{
+      nativeId: "43",
+      name: "Arctis Nova Wireless",
+      deviceType: "Headset",
+      level: 80,
+      charging: false,
+      observedAt: clock.value - 1,
+    }]);
+    const { client, sockets } = setup({
+      batteryCache,
+      clock,
+      inventory: [batteryHeadset],
+    });
+    const [headset] = await client.discover();
+    await expect(client.readStatus(headset)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 80 },
+    });
+
     sockets[0].emit("message", Buffer.from(JSON.stringify({
       event: "device_event",
       data: {
         id: 43,
         connectionEvent: { connectionStatus: "SOMETHING_NEW" },
-        batteryEvent: { batteryPercent: 80 },
+        batteryEvent: { batteryPercent: 90 },
       },
     })));
 
     await expect(client.readStatus(headset)).resolves.toMatchObject({
-      state: "disconnected",
+      state: "unavailable",
       level: { kind: "unavailable" },
     });
+    expect(batteryCache.removals).toEqual([]);
+    expect(batteryCache.upserts).toEqual([]);
+    expect(batteryCache.entries.get("43")?.level).toBe(80);
+
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: {
+        id: 43,
+        connectionEvent: { connectionStatus: "CONNECTED" },
+      },
+    })));
+    await expect(client.readStatus(headset)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 90 },
+    });
   });
+
+  it.each(["PAIRED_NOT_CONNECTED", "UNKNOWN_OR_HEADSET_NOT_CONNECTED"])(
+    "clears history for the known disconnected headset state %s",
+    async (connectionStatus) => {
+      const clock = { value: 4_000_000_000 };
+      const batteryCache = fakeBatteryCache([{
+        nativeId: "43",
+        name: "Arctis Nova Wireless",
+        deviceType: "Headset",
+        level: 80,
+        charging: false,
+        observedAt: clock.value - 1,
+      }]);
+      const { client, sockets } = setup({
+        batteryCache,
+        clock,
+        inventory: [batteryHeadset],
+      });
+      const [headset] = await client.discover();
+
+      sockets[0].emit("message", Buffer.from(JSON.stringify({
+        event: "device_event",
+        data: { id: 43, connectionEvent: { connectionStatus } },
+      })));
+
+      await vi.waitFor(() => expect(batteryCache.removals).toEqual(["43"]));
+      await expect(client.readStatus(headset)).resolves.toMatchObject({
+        state: "disconnected",
+        level: { kind: "unavailable" },
+      });
+    }
+  );
 
   it("times out a WebSocket handshake that never opens and retries later", async () => {
     vi.useFakeTimers();
@@ -911,6 +976,62 @@ describe("passive SteelSeries GG client", () => {
       freshness: "last-known",
     });
     expect(batteryCache.loadCalls).toBe(1);
+  });
+
+  it("removes hydrated history instead of showing it when the clock rolls behind its observation", async () => {
+    const clock = { value: 4_000_000_000 };
+    const observedAt = clock.value - 1;
+    const batteryCache = fakeBatteryCache([{
+      nativeId: "45",
+      name: "Apex Pro Wireless",
+      deviceType: "Keyboard",
+      level: 61,
+      charging: false,
+      observedAt,
+    }]);
+    const { client } = setup({ batteryCache, clock, inventory: [batteryKeyboard] });
+    const [keyboard] = await client.discover();
+    await expect(client.readStatus(keyboard)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 61 },
+    });
+
+    clock.value = observedAt - 1;
+
+    await expect(client.readStatus(keyboard)).resolves.toMatchObject({
+      state: "unavailable",
+      level: { kind: "unavailable" },
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+    await vi.waitFor(() => expect(batteryCache.removals).toEqual(["45"]));
+  });
+
+  it("removes live history instead of showing it when the clock rolls behind its observation", async () => {
+    const clock = { value: 4_000_000_000 };
+    const batteryCache = fakeBatteryCache();
+    const { client, sockets } = setup({
+      batteryCache,
+      clock,
+      inventory: [batteryKeyboard],
+    });
+    const [keyboard] = await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 45, battery_status: { charging: 0, level: 72 } },
+    })));
+    await expect(client.readStatus(keyboard)).resolves.toMatchObject({
+      state: "connected",
+      level: { kind: "percentage", value: 72 },
+    });
+
+    clock.value -= 1;
+
+    await expect(client.readStatus(keyboard)).resolves.toMatchObject({
+      state: "unavailable",
+      level: { kind: "unavailable" },
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+    await vi.waitFor(() => expect(batteryCache.removals).toEqual(["45"]));
   });
 
   it.each(["connection event", "disconnected inventory"])(

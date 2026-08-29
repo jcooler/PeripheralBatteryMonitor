@@ -99,6 +99,21 @@ function orderedEntries(desired: Map<string, SteelSeriesBatteryCacheEntry>): Ste
     .map((entry) => ({ ...entry }));
 }
 
+function normalizeDesired(
+  desired: Map<string, SteelSeriesBatteryCacheEntry>,
+  currentTime: number
+): void {
+  const normalized = [...desired.values()]
+    .flatMap((entry) => {
+      const parsed = parseEntry(entry, currentTime);
+      return parsed === undefined ? [] : [parsed];
+    })
+    .sort(compareEntries)
+    .slice(0, MAX_ENTRIES);
+  desired.clear();
+  for (const entry of normalized) desired.set(entry.nativeId, entry);
+}
+
 function parseSettings(settings: JsonObject, now: number): SteelSeriesBatteryCacheEntry[] {
   const rawCache: JsonValue | undefined = settings[CACHE_KEY];
   if (!isRecord(rawCache) || rawCache.schemaVersion !== SCHEMA_VERSION || !Array.isArray(rawCache.entries)) {
@@ -153,29 +168,34 @@ export function createSteelSeriesBatteryCacheStore(
     return result;
   };
 
-  const hydrateIfNeeded = async (settings?: JsonObject): Promise<Map<string, SteelSeriesBatteryCacheEntry>> => {
+  const hydrateIfNeeded = async (
+    settings: JsonObject | undefined,
+    currentTime: number
+  ): Promise<Map<string, SteelSeriesBatteryCacheEntry>> => {
     if (desired !== undefined) return desired;
     const source = settings ?? (await backend.getGlobalSettings());
-    desired = mapEntries(parseSettings(source, now()));
+    desired = mapEntries(parseSettings(source, currentTime));
     return desired;
   };
 
   const load = (): Promise<readonly SteelSeriesBatteryCacheEntry[]> =>
     enqueue(async () => {
-      const hydrated = await hydrateIfNeeded();
+      const hydrated = await hydrateIfNeeded(undefined, now());
       return orderedEntries(hydrated);
     });
 
   const upsert = (entry: SteelSeriesBatteryCacheEntry): Promise<void> =>
     enqueue(async () => {
-      const parsed = parseEntry(entry, now());
+      const currentTime = now();
+      const parsed = parseEntry(entry, currentTime);
       if (parsed === undefined) throw new Error("Invalid SteelSeries battery cache entry");
       const settings = await backend.getGlobalSettings();
-      const hydrated = await hydrateIfNeeded(settings);
+      const hydrated = await hydrateIfNeeded(settings, currentTime);
       const existing = hydrated.get(parsed.nativeId);
-      if (existing === undefined || parsed.observedAt > existing.observedAt) {
+      if (existing === undefined || parsed.observedAt >= existing.observedAt) {
         hydrated.set(parsed.nativeId, parsed);
       }
+      normalizeDesired(hydrated, currentTime);
       const nextSettings: JsonObject = { ...settings, [CACHE_KEY]: cacheAsJson(hydrated) };
       await backend.setGlobalSettings(nextSettings);
     });
@@ -183,9 +203,11 @@ export function createSteelSeriesBatteryCacheStore(
   const remove = (nativeId: string): Promise<void> =>
     enqueue(async () => {
       if (parseNativeId(nativeId) === undefined) throw new Error("Invalid SteelSeries native ID");
+      const currentTime = now();
       const settings = await backend.getGlobalSettings();
-      const hydrated = await hydrateIfNeeded(settings);
+      const hydrated = await hydrateIfNeeded(settings, currentTime);
       hydrated.delete(nativeId);
+      normalizeDesired(hydrated, currentTime);
       const nextSettings: JsonObject = { ...settings, [CACHE_KEY]: cacheAsJson(hydrated) };
       await backend.setGlobalSettings(nextSettings);
     });

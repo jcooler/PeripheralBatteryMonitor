@@ -306,6 +306,57 @@ describe("SteelSeries battery cache mutations", () => {
     expect(cacheIds(backend.latest)).toEqual(["245", "330"]);
   });
 
+  test("prunes entries that expire after hydration before writing a later mutation", async () => {
+    let currentNow = now;
+    const backend = new FakeGlobalSettingsBackend({
+      steelseriesBatteryCacheV1: {
+        schemaVersion: 1,
+        entries: [storedEntry()],
+      },
+    });
+    const store = createSteelSeriesBatteryCacheStore(backend, { now: () => currentNow });
+    await expect(store.load()).resolves.toEqual([apexEntry]);
+
+    currentNow = apexEntry.observedAt + 30 * DAY_MS + 1;
+    const freshArctis = { ...arctisEntry, observedAt: currentNow };
+    await store.upsert(freshArctis);
+
+    expect(cacheIds(backend.latest)).toEqual(["245"]);
+    const restartedStore = createSteelSeriesBatteryCacheStore(backend, { now: () => currentNow });
+    await expect(restartedStore.load()).resolves.toEqual([freshArctis]);
+  });
+
+  test("does not let an evicted thirty-third entry resurface after later churn", async () => {
+    const entries = Array.from({ length: 32 }, (_, index) =>
+      storedEntry({
+        nativeId: String(index),
+        name: `Device ${index}`,
+        deviceType: "Mouse",
+        observedAt: now - (index + 1) * MINUTE_MS,
+      })
+    );
+    const backend = new FakeGlobalSettingsBackend({
+      steelseriesBatteryCacheV1: { schemaVersion: 1, entries },
+    });
+    const store = createSteelSeriesBatteryCacheStore(backend, { now: () => now });
+    await expect(store.load()).resolves.toHaveLength(32);
+
+    const newest = {
+      ...apexEntry,
+      nativeId: "32",
+      name: "Device 32",
+      deviceType: "Mouse",
+      observedAt: now,
+    };
+    await store.upsert(newest);
+    expect(cacheIds(backend.latest)).not.toContain("31");
+
+    await store.remove(newest.nativeId);
+    expect(cacheIds(backend.latest)).toEqual(
+      Array.from({ length: 31 }, (_, index) => String(index))
+    );
+  });
+
   test("newest observedAt wins for the same ID and queued removal wins", async () => {
     const backend = new FakeGlobalSettingsBackend();
     const store = createSteelSeriesBatteryCacheStore(backend, { now: () => now });
@@ -318,6 +369,25 @@ describe("SteelSeries battery cache mutations", () => {
     await store.upsert(older);
     await store.upsert(newer);
     await expect(store.load()).resolves.toEqual([newer]);
+  });
+
+  test("persists a later queued charging change at the same observation time across restart", async () => {
+    const backend = new FakeGlobalSettingsBackend();
+    const store = createSteelSeriesBatteryCacheStore(backend, { now: () => now });
+    const initial = {
+      ...apexEntry,
+      level: 64,
+      charging: false,
+      observedAt: now,
+    };
+    const charging = { ...initial, charging: true };
+
+    const first = store.upsert(initial);
+    const second = store.upsert(charging);
+    await Promise.all([first, second]);
+
+    const restartedStore = createSteelSeriesBatteryCacheStore(backend, { now: () => now });
+    await expect(restartedStore.load()).resolves.toEqual([charging]);
   });
 
   test("retries the complete desired snapshot after a rejected write", async () => {

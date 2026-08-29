@@ -117,6 +117,23 @@ describe("battery status icons", () => {
     expect(freshSvg).toContain("<polygon");
   });
 
+  it("uses the recorded level color instead of a charging tint for last-known icons", () => {
+    const svg = decode(generateBatteryIcon({
+      deviceId: 1,
+      deviceName: "Aerox",
+      deviceType: "Mouse",
+      batteryLevel: 20,
+      isCharging: true,
+      isConnected: true,
+      isLastKnown: true,
+      providerLabel: "SteelSeries GG",
+    }, { showStatusText: true }));
+
+    expect(svg).toContain('fill="#FF7043" opacity="0.85"');
+    expect(svg).not.toContain("#4CAF50");
+    expect(svg).not.toContain("<polygon");
+  });
+
   it("renders XInput's qualitative state without inventing a percentage", () => {
     const svg = decode(generateQualitativeBatteryIcon({
       deviceName: "Xbox Controller",

@@ -93,6 +93,8 @@ interface LiveBattery {
   identity?: Pick<SteelSeriesBatteryCacheEntry, "name" | "deviceType">;
 }
 
+type SteelSeriesConnectionEvidence = "connected" | "disconnected" | "unknown";
+
 type HttpsRequestImplementation = typeof nodeHttpsRequest;
 
 export function createSteelSeriesHttpsGetter(
@@ -262,48 +264,56 @@ export class SteelSeriesClient implements DeviceProvider {
 
   async readStatus(ref: DeviceRef): Promise<BatteryStatus> {
     await this.ensureBatteryCacheHydrated();
+    const currentTime = this.now();
     if (
       ref.provider !== PROVIDER_ID ||
       ref.key !== makeDeviceKey(PROVIDER_ID, ref.nativeId)
     ) {
-      return unavailableStatus(ref, this.now(), "Invalid SteelSeries identity");
+      return unavailableStatus(ref, currentTime, "Invalid SteelSeries identity");
     }
 
     const device = this.cachedDevices.get(ref.nativeId);
     if (!device) {
-      return unavailableStatus(ref, this.now(), "SteelSeries device not found");
+      return unavailableStatus(ref, currentTime, "SteelSeries device not found");
     }
     if (!matchesConfiguredMetadata(device, ref)) {
       return unavailableStatus(
         ref,
-        this.now(),
+        currentTime,
         "SteelSeries identity metadata changed"
       );
     }
 
-    const connected = this.isConnected(device);
-    if (!connected) {
+    const connectionEvidence = this.connectionEvidence(device);
+    if (connectionEvidence === "disconnected") {
       return {
         state: "disconnected",
         level: { kind: "unavailable" },
         charging: null,
         provider: PROVIDER_ID,
         providerLabel: PROVIDER_LABEL,
-        observedAt: this.now(),
+        observedAt: currentTime,
         detail: "Disconnected",
       };
     }
+    if (connectionEvidence === "unknown") {
+      return unavailableStatus(
+        ref,
+        currentTime,
+        "SteelSeries connection state unavailable"
+      );
+    }
 
-    const battery = this.newestBattery(String(device.id));
+    const battery = this.newestBattery(String(device.id), currentTime);
     if (!battery) {
       return unavailableStatus(
         ref,
-        this.now(),
+        currentTime,
         "Waiting for passive SteelSeries battery data"
       );
     }
 
-    const isFresh = this.now() - battery.observedAt <= this.liveDataMaxAgeMs;
+    const isFresh = currentTime - battery.observedAt <= this.liveDataMaxAgeMs;
     return {
       state: "connected",
       level: { kind: "percentage", value: battery.level },
@@ -493,15 +503,21 @@ export class SteelSeriesClient implements DeviceProvider {
         }
       }
       if (
-        !this.isConnected(device) ||
-        (cached !== undefined &&
-          (cached.name !== metadata.name ||
-            cached.deviceType !== metadata.deviceType))
+        cached !== undefined &&
+        (cached.name !== metadata.name ||
+          cached.deviceType !== metadata.deviceType)
       ) {
         this.discardBattery(nativeId);
         continue;
       }
-      this.persistValidatedLiveBattery(device);
+      const connectionEvidence = this.connectionEvidence(device);
+      if (connectionEvidence === "disconnected") {
+        this.discardBattery(nativeId);
+        continue;
+      }
+      if (connectionEvidence === "connected") {
+        this.persistValidatedLiveBattery(device);
+      }
     }
     if (isFirstInventoryForLifecycle) {
       for (const [nativeId, live] of this.liveBatteryData) {
@@ -672,7 +688,7 @@ export class SteelSeriesClient implements DeviceProvider {
       if (typeof status === "string") {
         this.recordConnectionEvent(nativeId);
         this.headsetConnectionData.set(nativeId, status);
-        if (!isConnectedHeadsetState(status)) {
+        if (headsetConnectionEvidence(status) === "disconnected") {
           this.discardBattery(nativeId);
         }
       }
@@ -690,15 +706,17 @@ export class SteelSeriesClient implements DeviceProvider {
     if (device) this.persistValidatedLiveBattery(device);
   }
 
-  private isConnected(device: SteelSeriesDevice): boolean {
+  private connectionEvidence(device: SteelSeriesDevice): SteelSeriesConnectionEvidence {
     const nativeId = String(device.id);
     if (isHeadsetType(device)) {
       const headsetStatus = this.headsetConnectionData.get(nativeId);
       if (headsetStatus) {
-        return isConnectedHeadsetState(headsetStatus);
+        return headsetConnectionEvidence(headsetStatus);
       }
     }
-    return this.connectionData.get(nativeId) ?? device.connected === 1;
+    const eventConnection = this.connectionData.get(nativeId);
+    const connected = eventConnection ?? device.connected === 1;
+    return connected ? "connected" : "disconnected";
   }
 
   private resetEngineGeneration(): void {
@@ -729,7 +747,8 @@ export class SteelSeriesClient implements DeviceProvider {
   }
 
   private newestBattery(
-    nativeId: string
+    nativeId: string,
+    currentTime: number
   ): SteelSeriesBatteryCacheEntry | undefined {
     if (this.batteryTombstones.has(nativeId)) return undefined;
     const device = this.cachedDevices.get(nativeId);
@@ -759,7 +778,10 @@ export class SteelSeriesClient implements DeviceProvider {
         ? liveEntry
         : cachedEntry;
     if (!newest) return undefined;
-    if (this.now() - newest.observedAt > BATTERY_HISTORY_MAX_AGE_MS) {
+    if (
+      newest.observedAt > currentTime ||
+      currentTime - newest.observedAt > BATTERY_HISTORY_MAX_AGE_MS
+    ) {
       this.discardBattery(nativeId);
       return undefined;
     }
@@ -772,7 +794,7 @@ export class SteelSeriesClient implements DeviceProvider {
     if (
       this.cachedDevices.get(nativeId) !== device ||
       this.batteryTombstones.has(nativeId) ||
-      !this.isConnected(device)
+      this.connectionEvidence(device) !== "connected"
     ) {
       return;
     }
@@ -1033,13 +1055,22 @@ function isSteelSeriesDevice(value: unknown): value is SteelSeriesDevice {
   );
 }
 
-function isConnectedHeadsetState(status: string): boolean {
-  return (
+function headsetConnectionEvidence(status: string): SteelSeriesConnectionEvidence {
+  if (
     status === "CONNECTED" ||
     status === "HEADSET_CONNECTED" ||
     status === "PAIRED_CONNECTED" ||
     status === "PAIRED_AND_CONNECTED"
-  );
+  ) {
+    return "connected";
+  }
+  if (
+    status === "PAIRED_NOT_CONNECTED" ||
+    status === "UNKNOWN_OR_HEADSET_NOT_CONNECTED"
+  ) {
+    return "disconnected";
+  }
+  return "unknown";
 }
 
 function isHeadsetType(device: SteelSeriesDevice): boolean {

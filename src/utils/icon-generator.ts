@@ -51,7 +51,8 @@ export function generateBatteryIcon(
 ): string {
   const o = opts(options);
   const level = Math.max(0, Math.min(100, info.batteryLevel));
-  const color = getBatteryColor(level, info.isCharging);
+  const effectiveCharging = info.isCharging && !info.isLastKnown;
+  const color = getBatteryColor(level, effectiveCharging);
 
   // Compute vertical layout based on which labels are shown
   const topLabel = o.showDeviceType;
@@ -85,7 +86,7 @@ export function generateBatteryIcon(
   // Charging bolt centered in battery
   const boltCx = bx + bw / 2;
   const boltCy = by + bh / 2;
-  const bolt = info.isCharging && !info.isLastKnown
+  const bolt = effectiveCharging
     ? `<polygon points="${boltCx + 8},${boltCy - 12} ${boltCx - 4},${boltCy + 2} ${boltCx + 4},${boltCy + 2} ${boltCx - 2},${boltCy + 16} ${boltCx + 14},${boltCy - 2} ${boltCx + 5},${boltCy - 2}" fill="#FFD700" stroke="#B8860B" stroke-width="1"/>`
     : "";
 
