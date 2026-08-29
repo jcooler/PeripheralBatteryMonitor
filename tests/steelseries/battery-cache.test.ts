@@ -145,6 +145,46 @@ describe("SteelSeries battery cache loading", () => {
     await expect(store.load()).resolves.toEqual([apexEntry]);
   });
 
+  test("drops metadata that contains URLs, paths, addresses, or hardware identifiers", async () => {
+    const unsafeNames = [
+      "https://steelseries.example/device",
+      "C:\\Program Files\\SteelSeries",
+      "hid#vid_1038&pid_185A#serial-001",
+      "usb:1038:185A",
+      "VID_1038&PID_185A",
+      "127.0.0.1:57192",
+      "serial:SS-SECRET-001",
+      "S/N:SS-SECRET-001",
+      "SN1234",
+    ];
+    const unsafeEntries = unsafeNames.map((name, index) =>
+      storedEntry({ nativeId: String(index + 1), name })
+    );
+    unsafeEntries.push(
+      storedEntry({ nativeId: "9", deviceType: "usb:1038:185A" }),
+      storedEntry({
+        nativeId: "10",
+        name: "Apex Pro TKL Wireless v2.1+' (Gen_2) -",
+        deviceType: "Mouse & Keyboard_Pro",
+      })
+    );
+    const store = createSteelSeriesBatteryCacheStore(
+      new FakeGlobalSettingsBackend({
+        steelseriesBatteryCacheV1: { schemaVersion: 1, entries: unsafeEntries },
+      }),
+      { now: () => now }
+    );
+
+    await expect(store.load()).resolves.toEqual([
+      {
+        ...apexEntry,
+        nativeId: "10",
+        name: "Apex Pro TKL Wireless v2.1+' (Gen_2) -",
+        deviceType: "Mouse & Keyboard_Pro",
+      },
+    ]);
+  });
+
   test("drops invalid levels and charging values", async () => {
     const entries = [
       storedEntry({ nativeId: "1", level: -1 }),

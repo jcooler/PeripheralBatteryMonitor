@@ -6,6 +6,9 @@ const MAX_ENTRIES = 32;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_NAME_LENGTH = 160;
 const MAX_TYPE_LENGTH = 80;
+const SAFE_DISPLAY_METADATA_PATTERN = /^[\p{L}\p{N} .+'()&_/-]+$/u;
+const SENSITIVE_DISPLAY_METADATA_PATTERN =
+  /(?:\b(?:https?|wss?|file):\/\/|(?:^|\s)[A-Za-z]:[\\/]|\\\\|\/(?:dev|sys|proc|usb|hidraw)(?:[\\/]|$)|\b(?:hid|usb)(?:[:#\\/]|[_-]?vid)|\b(?:vid|pid)[_:= -]?[0-9a-f]{4}\b|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b(?:serial|s\/n|sn)[_:= -]+[A-Za-z0-9]|\bsn(?=\d))/i;
 
 export interface SteelSeriesBatteryCacheEntry {
   nativeId: string;
@@ -48,7 +51,9 @@ function validMetadata(value: unknown, maxLength: number): value is string {
     typeof value === "string" &&
     value.length > 0 &&
     value.length <= maxLength &&
-    value.trim() === value
+    value.trim() === value &&
+    SAFE_DISPLAY_METADATA_PATTERN.test(value) &&
+    !SENSITIVE_DISPLAY_METADATA_PATTERN.test(value)
   );
 }
 
