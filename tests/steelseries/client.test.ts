@@ -360,6 +360,37 @@ describe("passive SteelSeries GG client", () => {
     });
   });
 
+  it("rejects an older inventory response after a newer request has applied", async () => {
+    const olderInventory = deferred<unknown>();
+    const newerInventory = deferred<unknown>();
+    const { client, httpGet } = setup();
+    await client.initialize();
+    httpGet
+      .mockImplementationOnce(() => olderInventory.promise)
+      .mockImplementationOnce(() => newerInventory.promise);
+    const olderDiscovery = client.discover();
+    await vi.waitFor(() => expect(httpGet).toHaveBeenCalledTimes(1));
+    const newerDiscovery = client.discover();
+    await vi.waitFor(() => expect(httpGet).toHaveBeenCalledTimes(2));
+    newerInventory.resolve({
+      devices: [{
+        ...batteryKeyboard,
+        name: "newer_keyboard",
+        display_name: "Newer Keyboard",
+      }],
+    });
+    const [newerKeyboard] = await newerDiscovery;
+    olderInventory.resolve({ devices: [batteryKeyboard] });
+
+    await expect(olderDiscovery).rejects.toThrow(
+      "SteelSeries inventory response superseded"
+    );
+    await expect(client.readStatus(newerKeyboard)).resolves.toMatchObject({
+      state: "unavailable",
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+  });
+
   it("does not reuse battery data after inventory confirms a disconnect", async () => {
     const { client, httpGet, sockets } = setup();
     const [mouse] = await client.discover();
@@ -489,6 +520,35 @@ describe("passive SteelSeries GG client", () => {
     });
     expect(newDevice.key).toBe(oldMouse.key);
     expect(requests.every(({ method, path }) => method === "GET" && path === "/devices")).toBe(true);
+  });
+
+  it("does not relabel a live Apex sample after its numeric ID is recycled", async () => {
+    const batteryCache = fakeBatteryCache();
+    const { client, httpGet, sockets } = setup({
+      batteryCache,
+      inventory: [batteryKeyboard],
+    });
+    await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 45, battery_status: { charging: 0, level: 84 } },
+    })));
+    httpGet.mockResolvedValueOnce({
+      devices: [{
+        ...batteryKeyboard,
+        name: "replacement_keyboard",
+        display_name: "Replacement Keyboard",
+      }],
+    });
+
+    const [replacement] = await client.discover();
+
+    await expect(client.readStatus(replacement)).resolves.toMatchObject({
+      state: "unavailable",
+      level: { kind: "unavailable" },
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+    expect(batteryCache.entries.get("45")).toBeUndefined();
   });
 
   it("ignores stale socket callbacks and destroy never schedules reconnect", async () => {
@@ -910,6 +970,67 @@ describe("passive SteelSeries GG client", () => {
       state: "connected",
       level: { kind: "percentage", value: 72 },
     });
+  });
+
+  it("retries a failed durable removal after another confirmed disconnect", async () => {
+    const firstRemoval = deferred<void>();
+    const entries = new Map<string, SteelSeriesBatteryCacheEntry>([["45", {
+      nativeId: "45",
+      name: "Apex Pro Wireless",
+      deviceType: "Keyboard",
+      level: 72,
+      charging: false,
+      observedAt: 24_999,
+    }]]);
+    let removeAttempts = 0;
+    const batteryCache: SteelSeriesBatteryCacheStore = {
+      async load() {
+        return [...entries.values()].map((entry) => ({ ...entry }));
+      },
+      async upsert(entry) {
+        entries.set(entry.nativeId, { ...entry });
+      },
+      async remove(nativeId) {
+        removeAttempts += 1;
+        if (removeAttempts === 1) {
+          await firstRemoval.promise;
+          throw new Error("transient settings failure");
+        }
+        entries.delete(nativeId);
+      },
+    };
+    const warn = vi.fn();
+    const { client, httpGet, sockets } = setup({
+      batteryCache,
+      diagnosticSink: { warn },
+      inventory: [batteryKeyboard],
+    });
+    await client.discover();
+    sockets[0].emit("message", Buffer.from(JSON.stringify({
+      event: "device_event",
+      data: { id: 45, connection_status: { status: 0 } },
+    })));
+    await vi.waitFor(() => expect(removeAttempts).toBe(1));
+    httpGet.mockResolvedValueOnce({
+      devices: [{ ...batteryKeyboard, connected: 0 }],
+    });
+    await client.discover();
+    firstRemoval.resolve();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+
+    const restarted = setup({
+      batteryCache,
+      inventory: [batteryKeyboard],
+    }).client;
+    const [keyboard] = await restarted.discover();
+
+    await expect(restarted.readStatus(keyboard)).resolves.toMatchObject({
+      state: "unavailable",
+      level: { kind: "unavailable" },
+      detail: "Waiting for passive SteelSeries battery data",
+    });
+    expect(removeAttempts).toBe(2);
+    expect(entries.has("45")).toBe(false);
   });
 
   it("retains absent-device persistence without displaying it", async () => {

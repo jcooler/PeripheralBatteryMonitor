@@ -89,6 +89,8 @@ interface LiveBattery {
   level: number;
   charging: boolean | null;
   observedAt: number;
+  observedLifecycleGeneration: number;
+  identity?: Pick<SteelSeriesBatteryCacheEntry, "name" | "deviceType">;
 }
 
 type HttpsRequestImplementation = typeof nodeHttpsRequest;
@@ -199,6 +201,8 @@ export class SteelSeriesClient implements DeviceProvider {
   private cachedBatteryData = new Map<string, SteelSeriesBatteryCacheEntry>();
   private batteryCacheHydration: Promise<void> | null = null;
   private batteryTombstones = new Set<string>();
+  private batteryRemovalInFlight = new Map<string, Promise<void>>();
+  private batteryRemovalRetryRequested = new Set<string>();
   private connectionData = new Map<string, boolean>();
   private headsetConnectionData = new Map<string, string>();
   private connectionEventSequence = 0;
@@ -207,6 +211,9 @@ export class SteelSeriesClient implements DeviceProvider {
   private socketGeneration = 0;
   private lifecycleGeneration = 0;
   private discoveryGeneration = 0;
+  private inventoryRequestSequence = 0;
+  private latestAppliedInventoryRequestSequence = 0;
+  private inventoryAppliedLifecycleGeneration: number | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private destroyed = false;
@@ -400,6 +407,7 @@ export class SteelSeriesClient implements DeviceProvider {
     const lifecycleGeneration = this.lifecycleGeneration;
     const discoveryGeneration = this.discoveryGeneration;
     const connectionEventSequence = this.connectionEventSequence;
+    const inventoryRequestSequence = ++this.inventoryRequestSequence;
     const address = this.encryptedAddress;
     const payload = (await this.httpGet({
       address,
@@ -417,8 +425,16 @@ export class SteelSeriesClient implements DeviceProvider {
     if (!payload || !Array.isArray(payload.devices)) {
       throw new Error("SteelSeries GG returned an invalid device list");
     }
+    if (
+      inventoryRequestSequence < this.latestAppliedInventoryRequestSequence
+    ) {
+      throw new Error("SteelSeries inventory response superseded");
+    }
+    this.latestAppliedInventoryRequestSequence = inventoryRequestSequence;
 
     const validInventory = payload.devices.filter(isSteelSeriesDevice);
+    const isFirstInventoryForLifecycle =
+      this.inventoryAppliedLifecycleGeneration !== lifecycleGeneration;
     const identityCounts = new Map<number, number>();
     for (const device of validInventory) {
       identityCounts.set(device.id, (identityCounts.get(device.id) ?? 0) + 1);
@@ -434,13 +450,13 @@ export class SteelSeriesClient implements DeviceProvider {
         this.connectionData.delete(nativeId);
         this.headsetConnectionData.delete(nativeId);
         this.connectionEventSequences.delete(nativeId);
-        if (device.connected === 0) this.discardBattery(nativeId);
       }
     }
     const nextDevices = new Map(
       batteryDevices.map((device) => [String(device.id), device])
     );
     this.cachedDevices = nextDevices;
+    this.inventoryAppliedLifecycleGeneration = lifecycleGeneration;
     for (const [id, count] of identityCounts) {
       const nativeId = String(id);
       const device = nextDevices.get(nativeId);
@@ -455,8 +471,29 @@ export class SteelSeriesClient implements DeviceProvider {
       }
       const metadata = exactBatteryMetadata(device);
       const cached = this.cachedBatteryData.get(nativeId);
+      const live = this.liveBatteryData.get(nativeId);
+      if (live !== undefined) {
+        if (
+          live.identity !== undefined &&
+          (live.identity.name !== metadata.name ||
+            live.identity.deviceType !== metadata.deviceType)
+        ) {
+          this.discardBattery(nativeId);
+          continue;
+        }
+        if (live.identity === undefined) {
+          if (
+            !isFirstInventoryForLifecycle ||
+            live.observedLifecycleGeneration !== lifecycleGeneration
+          ) {
+            this.discardBattery(nativeId);
+            continue;
+          }
+          live.identity = metadata;
+        }
+      }
       if (
-        device.connected === 0 ||
+        !this.isConnected(device) ||
         (cached !== undefined &&
           (cached.name !== metadata.name ||
             cached.deviceType !== metadata.deviceType))
@@ -465,6 +502,16 @@ export class SteelSeriesClient implements DeviceProvider {
         continue;
       }
       this.persistValidatedLiveBattery(device);
+    }
+    if (isFirstInventoryForLifecycle) {
+      for (const [nativeId, live] of this.liveBatteryData) {
+        if (
+          live.identity === undefined &&
+          live.observedLifecycleGeneration === lifecycleGeneration
+        ) {
+          this.liveBatteryData.delete(nativeId);
+        }
+      }
     }
     this.inventoryWasDiscovered = true;
     return batteryDevices;
@@ -582,11 +629,14 @@ export class SteelSeriesClient implements DeviceProvider {
       const level = data.battery_status.level;
       const charging = data.battery_status.charging;
       if (isPercentage(level)) {
-        this.batteryTombstones.delete(nativeId);
+        const device = this.cachedDevices.get(nativeId);
+        this.reviveBattery(nativeId);
         this.liveBatteryData.set(nativeId, {
           level,
           charging: typeof charging === "number" ? charging === 1 : null,
           observedAt: this.now(),
+          observedLifecycleGeneration: this.lifecycleGeneration,
+          ...(device ? { identity: exactBatteryMetadata(device) } : {}),
         });
       }
     }
@@ -595,11 +645,14 @@ export class SteelSeriesClient implements DeviceProvider {
       const level = data.batteryEvent.batteryPercent;
       if (isPercentage(level)) {
         const existing = this.liveBatteryData.get(nativeId);
-        this.batteryTombstones.delete(nativeId);
+        const device = this.cachedDevices.get(nativeId);
+        this.reviveBattery(nativeId);
         this.liveBatteryData.set(nativeId, {
           level,
           charging: existing?.charging ?? null,
           observedAt: this.now(),
+          observedLifecycleGeneration: this.lifecycleGeneration,
+          ...(device ? { identity: exactBatteryMetadata(device) } : {}),
         });
       }
     }
@@ -684,8 +737,17 @@ export class SteelSeriesClient implements DeviceProvider {
     const metadata = exactBatteryMetadata(device);
 
     const live = this.liveBatteryData.get(nativeId);
-    const liveEntry = live
-      ? { nativeId, ...metadata, ...live }
+    const liveEntry =
+      live &&
+      live.identity?.name === metadata.name &&
+      live.identity.deviceType === metadata.deviceType
+      ? {
+          nativeId,
+          ...metadata,
+          level: live.level,
+          charging: live.charging,
+          observedAt: live.observedAt,
+        }
       : undefined;
     const cached = this.cachedBatteryData.get(nativeId);
     const cachedEntry =
@@ -716,11 +778,20 @@ export class SteelSeriesClient implements DeviceProvider {
     }
     const metadata = batteryMetadata(device);
     const live = this.liveBatteryData.get(nativeId);
-    if (!metadata || !live) return;
+    if (
+      !metadata ||
+      !live ||
+      live.identity?.name !== metadata.name ||
+      live.identity.deviceType !== metadata.deviceType
+    ) {
+      return;
+    }
     const entry: SteelSeriesBatteryCacheEntry = {
       nativeId,
       ...metadata,
-      ...live,
+      level: live.level,
+      charging: live.charging,
+      observedAt: live.observedAt,
     };
     if (!isValidBatteryCacheEntry(entry, this.now())) return;
     void this.batteryCache.upsert(entry).catch(() => this.warnCacheUnavailable());
@@ -729,10 +800,40 @@ export class SteelSeriesClient implements DeviceProvider {
   private discardBattery(nativeId: string): void {
     this.liveBatteryData.delete(nativeId);
     this.cachedBatteryData.delete(nativeId);
-    if (this.batteryTombstones.has(nativeId)) return;
     this.batteryTombstones.add(nativeId);
-    if (this.batteryCache) {
-      void this.batteryCache.remove(nativeId).catch(() => this.warnCacheUnavailable());
+    this.requestBatteryRemoval(nativeId);
+  }
+
+  private reviveBattery(nativeId: string): void {
+    this.batteryTombstones.delete(nativeId);
+    this.batteryRemovalRetryRequested.delete(nativeId);
+  }
+
+  private requestBatteryRemoval(nativeId: string): void {
+    if (!this.batteryCache) return;
+    if (this.batteryRemovalInFlight.has(nativeId)) {
+      this.batteryRemovalRetryRequested.add(nativeId);
+      return;
+    }
+    const removal = this.batteryCache.remove(nativeId);
+    this.batteryRemovalInFlight.set(nativeId, removal);
+    void removal.then(
+      () => this.finishBatteryRemoval(nativeId, removal, false),
+      () => this.finishBatteryRemoval(nativeId, removal, true)
+    );
+  }
+
+  private finishBatteryRemoval(
+    nativeId: string,
+    removal: Promise<void>,
+    failed: boolean
+  ): void {
+    if (this.batteryRemovalInFlight.get(nativeId) !== removal) return;
+    this.batteryRemovalInFlight.delete(nativeId);
+    if (failed) this.warnCacheUnavailable();
+    const retryRequested = this.batteryRemovalRetryRequested.delete(nativeId);
+    if (retryRequested && this.batteryTombstones.has(nativeId)) {
+      this.requestBatteryRemoval(nativeId);
     }
   }
 
