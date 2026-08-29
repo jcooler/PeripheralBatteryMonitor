@@ -151,19 +151,23 @@ describe("SteelSeries battery cache loading", () => {
       "C:\\Program Files\\SteelSeries",
       "hid#vid_1038&pid_185A#serial-001",
       "usb:1038:185A",
+      "USB_1038_185A",
+      "HID_1038_185A",
       "VID_1038&PID_185A",
       "127.0.0.1:57192",
       "serial:SS-SECRET-001",
+      "serial1234",
       "S/N:SS-SECRET-001",
       "SN1234",
+      "www.example.com",
     ];
     const unsafeEntries = unsafeNames.map((name, index) =>
       storedEntry({ nativeId: String(index + 1), name })
     );
     unsafeEntries.push(
-      storedEntry({ nativeId: "9", deviceType: "usb:1038:185A" }),
+      storedEntry({ nativeId: "14", deviceType: "usb:1038:185A" }),
       storedEntry({
-        nativeId: "10",
+        nativeId: "15",
         name: "Apex Pro TKL Wireless v2.1+' (Gen_2) -",
         deviceType: "Mouse & Keyboard_Pro",
       })
@@ -178,7 +182,7 @@ describe("SteelSeries battery cache loading", () => {
     await expect(store.load()).resolves.toEqual([
       {
         ...apexEntry,
-        nativeId: "10",
+        nativeId: "15",
         name: "Apex Pro TKL Wireless v2.1+' (Gen_2) -",
         deviceType: "Mouse & Keyboard_Pro",
       },
@@ -258,6 +262,38 @@ describe("SteelSeries battery cache loading", () => {
 });
 
 describe("SteelSeries battery cache mutations", () => {
+  test("rejects unsafe names before writing and keeps the queue usable", async () => {
+    for (const name of ["USB_1038_185A", "www.example.com"]) {
+      const backend = new FakeGlobalSettingsBackend();
+      const store = createSteelSeriesBatteryCacheStore(backend, { now: () => now });
+
+      await expect(store.upsert({ ...apexEntry, name })).rejects.toThrow(
+        "Invalid SteelSeries battery cache entry"
+      );
+      expect(backend.writes).toHaveLength(0);
+
+      await store.upsert(apexEntry);
+      expect(backend.writes).toHaveLength(1);
+      expect(cacheIds(backend.latest)).toEqual(["330"]);
+    }
+  });
+
+  test("rejects unsafe device types before writing and keeps the queue usable", async () => {
+    for (const deviceType of ["serial1234", "HID_1038_185A"]) {
+      const backend = new FakeGlobalSettingsBackend();
+      const store = createSteelSeriesBatteryCacheStore(backend, { now: () => now });
+
+      await expect(store.upsert({ ...apexEntry, deviceType })).rejects.toThrow(
+        "Invalid SteelSeries battery cache entry"
+      );
+      expect(backend.writes).toHaveLength(0);
+
+      await store.upsert(apexEntry);
+      expect(backend.writes).toHaveLength(1);
+      expect(cacheIds(backend.latest)).toEqual(["330"]);
+    }
+  });
+
   test("serializes concurrent upserts, keeps newest duplicate state, and preserves unrelated settings", async () => {
     const backend = new FakeGlobalSettingsBackend({ unrelated: { keep: true } });
     const store = createSteelSeriesBatteryCacheStore(backend, { now: () => now });

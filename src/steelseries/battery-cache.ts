@@ -8,7 +8,7 @@ const MAX_NAME_LENGTH = 160;
 const MAX_TYPE_LENGTH = 80;
 const SAFE_DISPLAY_METADATA_PATTERN = /^[\p{L}\p{N} .+'()&_/-]+$/u;
 const SENSITIVE_DISPLAY_METADATA_PATTERN =
-  /(?:\b(?:https?|wss?|file):\/\/|(?:^|\s)[A-Za-z]:[\\/]|\\\\|\/(?:dev|sys|proc|usb|hidraw)(?:[\\/]|$)|\b(?:hid|usb)(?:[:#\\/]|[_-]?vid)|\b(?:vid|pid)[_:= -]?[0-9a-f]{4}\b|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b(?:serial|s\/n|sn)[_:= -]+[A-Za-z0-9]|\bsn(?=\d))/i;
+  /(?:\b(?:https?|wss?|file):\/\/|(?:^|\s)[A-Za-z]:[\\/]|\\\\|\/(?:dev|sys|proc|usb|hidraw)(?:[\\/]|$)|\b(?:hid|usb)(?:[:#\\/]|[_-]?vid|[_-][0-9a-f]{4}(?:[_-]|$))|\b(?:vid|pid)[_:= -]?[0-9a-f]{4}\b|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b|\bserial(?=[A-Za-z0-9])|\b(?:serial|s\/n|sn)[_:= -]+[A-Za-z0-9]|\bsn(?=\d))/i;
 
 export interface SteelSeriesBatteryCacheEntry {
   nativeId: string;
@@ -168,10 +168,10 @@ export function createSteelSeriesBatteryCacheStore(
 
   const upsert = (entry: SteelSeriesBatteryCacheEntry): Promise<void> =>
     enqueue(async () => {
-      const settings = await backend.getGlobalSettings();
-      const hydrated = await hydrateIfNeeded(settings);
       const parsed = parseEntry(entry, now());
       if (parsed === undefined) throw new Error("Invalid SteelSeries battery cache entry");
+      const settings = await backend.getGlobalSettings();
+      const hydrated = await hydrateIfNeeded(settings);
       const existing = hydrated.get(parsed.nativeId);
       if (existing === undefined || parsed.observedAt > existing.observedAt) {
         hydrated.set(parsed.nativeId, parsed);
