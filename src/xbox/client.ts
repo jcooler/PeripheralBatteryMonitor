@@ -1,100 +1,367 @@
-import { spawn } from "node:child_process";
+import { runPowerShell } from "../process/powershell";
+import { createLinkedAbortController } from "../process/abort";
+import {
+  makeDeviceKey,
+  type BatteryStatus,
+  type DeviceDescriptor,
+  type DeviceProvider,
+  type DeviceRef,
+} from "../devices/types";
 import type { BatteryInfo } from "../types";
 
-/** Discrete level (0-3) → percentage approximation for display */
-const LEVEL_PCT = [10, 33, 66, 100];
+export type XInputPowerShellExecutor = (
+  script: string,
+  options?: { signal?: AbortSignal }
+) => Promise<string>;
 
-interface XboxControllerStatus {
-  index: number;
-  connected: boolean;
-  batteryType: number; // 0=disconnected 1=wired 2=alkaline 3=NiMH 0xFF=unknown
-  batteryLevel: number; // 0=empty 1=low 2=medium 3=full
+interface XInputProviderOptions {
+  execute?: XInputPowerShellExecutor;
+  platform?: NodeJS.Platform;
+  now?: () => number;
 }
 
-/**
- * Xbox controller battery via XInput (Windows only).
- * Reads up to 4 wireless controllers connected via USB dongle.
- */
-export class XboxClient {
-  private cached: XboxControllerStatus[] = [];
+export interface XboxControllerStatus {
+  index: number;
+  connected: boolean;
+  resultCode: number;
+  batteryType: number;
+  batteryLevel: number;
+}
 
-  async initialize(): Promise<boolean> {
-    if (process.platform !== "win32") return false;
-    const status = await this.queryControllers();
-    this.cached = status;
-    return status.some((c) => c.connected);
-  }
+interface XInputSnapshot extends XboxControllerStatus {
+  observedAt: number;
+}
 
-  /** Query all 4 XInput slots via PowerShell */
-  private queryControllers(): Promise<XboxControllerStatus[]> {
-    return new Promise((resolve) => {
-      const script = `
+const XINPUT_DISCOVERY_SCRIPT = String.raw`
 Add-Type @'
-using System;
 using System.Runtime.InteropServices;
-public class XI {
+
+[StructLayout(LayoutKind.Sequential)]
+public struct XInputBatteryInformation {
+    public byte BatteryType;
+    public byte BatteryLevel;
+}
+
+public static class PassiveXInputBattery {
     [DllImport("XInput1_4.dll")]
-    public static extern uint XInputGetBatteryInformation(uint i, byte t, out byte bt, out byte bl);
-    [DllImport("XInput1_4.dll")]
-    public static extern uint XInputGetState(uint i, IntPtr p);
+    public static extern uint XInputGetBatteryInformation(
+        uint userIndex,
+        byte deviceType,
+        out XInputBatteryInformation batteryInformation
+    );
 }
 '@ -ErrorAction Stop
 
 $results = @()
-for ($i = 0; $i -lt 4; $i++) {
-  $buf = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(16)
-  $s = [XI]::XInputGetState($i, $buf)
-  [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
-  $connected = ($s -eq 0)
-  [byte]$bt = 0
-  [byte]$bl = 0
-  if ($connected) {
-    [XI]::XInputGetBatteryInformation($i, 0, [ref]$bt, [ref]$bl) | Out-Null
+for ($index = 0; $index -lt 4; $index++) {
+  $batteryInformation = New-Object XInputBatteryInformation
+  $result = [PassiveXInputBattery]::XInputGetBatteryInformation(
+    $index,
+    0,
+    [ref]$batteryInformation
+  )
+  $results += [PSCustomObject]@{
+    index = $index
+    connected = ($result -eq 0)
+    resultCode = [long]$result
+    batteryType = [int]$batteryInformation.BatteryType
+    batteryLevel = [int]$batteryInformation.BatteryLevel
   }
-  $results += [PSCustomObject]@{ index = $i; connected = $connected; batteryType = [int]$bt; batteryLevel = [int]$bl }
 }
+
 $results | ConvertTo-Json -Compress
 `;
-      const ps = spawn(
-        "powershell.exe",
-        ["-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", script],
-        { windowsHide: true }
-      );
-      let output = "";
-      ps.stdout.on("data", (d) => { output += d.toString(); });
-      ps.on("close", () => {
-        try {
-          const trimmed = output.trim();
-          if (!trimmed) return resolve([]);
-          const parsed = JSON.parse(trimmed);
-          resolve(Array.isArray(parsed) ? parsed : [parsed]);
-        } catch {
-          resolve([]);
-        }
+
+const LEVELS = ["empty", "low", "medium", "full"] as const;
+
+/**
+ * Passive XInput battery provider.
+ *
+ * XInput identifies controllers only by one of four session-local slots. The
+ * exact slot is persisted; the provider never substitutes a different slot,
+ * though Windows may assign a controller a different slot after reconnect.
+ */
+export class XInputProvider implements DeviceProvider {
+  readonly id = "xinput" as const;
+  readonly label = "XInput";
+
+  private readonly execute: XInputPowerShellExecutor;
+  private readonly platform: NodeJS.Platform;
+  private readonly now: () => number;
+  private snapshots = new Map<string, XInputSnapshot>();
+  private discoveryCompleted = false;
+  private latestDiscoveryAt = 0;
+  private discoveryGeneration = 0;
+  private discoveryAbort?: AbortController;
+
+  constructor(options: XInputProviderOptions = {}) {
+    this.execute =
+      options.execute ??
+      ((script, runOptions) =>
+        runPowerShell(script, {
+          signal: runOptions?.signal,
+          timeoutMs: 5_000,
+          maxOutputBytes: 64 * 1024,
+        }));
+    this.platform = options.platform ?? process.platform;
+    this.now = options.now ?? Date.now;
+  }
+
+  async discover(signal?: AbortSignal): Promise<DeviceDescriptor[]> {
+    this.discoveryAbort?.abort(new Error("XInput discovery was superseded"));
+    const linked = createLinkedAbortController(signal);
+    const controller = linked.controller;
+    this.discoveryAbort = controller;
+    const generation = ++this.discoveryGeneration;
+
+    try {
+      controller.signal.throwIfAborted();
+      if (this.platform !== "win32") {
+        this.snapshots.clear();
+        this.discoveryCompleted = true;
+        this.latestDiscoveryAt = this.now();
+        return [];
+      }
+
+      const output = await this.execute(XINPUT_DISCOVERY_SCRIPT, {
+        signal: controller.signal,
       });
-      ps.on("error", () => resolve([]));
-      // Timeout after 5s
-      setTimeout(() => { try { ps.kill(); } catch {} resolve([]); }, 5000);
-    });
+      controller.signal.throwIfAborted();
+      if (generation !== this.discoveryGeneration) {
+        throw new Error("XInput discovery was invalidated");
+      }
+
+      const observedAt = this.now();
+      const nextSnapshots = new Map<string, XInputSnapshot>();
+      for (const status of parseStatuses(output)) {
+        nextSnapshots.set(nativeIdForSlot(status.index), {
+          ...status,
+          observedAt,
+        });
+      }
+
+      this.snapshots = nextSnapshots;
+      this.discoveryCompleted = true;
+      this.latestDiscoveryAt = observedAt;
+      return [...nextSnapshots.entries()]
+        .filter(([, snapshot]) => snapshot.connected && isWireless(snapshot))
+        .map(([nativeId, snapshot]) => toDescriptor(nativeId, snapshot));
+    } finally {
+      linked.unlink();
+      if (this.discoveryAbort === controller) this.discoveryAbort = undefined;
+    }
   }
 
-  async getDevices(): Promise<XboxControllerStatus[]> {
-    const status = await this.queryControllers();
-    this.cached = status;
-    return status.filter((c) => c.connected);
-  }
+  async readStatus(ref: DeviceRef): Promise<BatteryStatus> {
+    if (
+      ref.provider !== this.id ||
+      ref.key !== makeDeviceKey(this.id, ref.nativeId) ||
+      !/^slot:[0-3]$/.test(ref.nativeId)
+    ) {
+      return this.unavailable(
+        this.discoveryCompleted ? this.latestDiscoveryAt : this.now(),
+        "Invalid XInput device identity"
+      );
+    }
 
-  async getBatteryInfo(controller: XboxControllerStatus): Promise<BatteryInfo> {
-    const isWired = controller.batteryType === 1;
-    const isWireless = controller.batteryType === 2 || controller.batteryType === 3;
+    if (!this.discoveryCompleted) {
+      return this.unavailable(this.now(), "XInput discovery has not completed");
+    }
+
+    const snapshot = this.snapshots.get(ref.nativeId);
+    if (!snapshot) {
+      return {
+        state: "disconnected",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: this.id,
+        providerLabel: this.label,
+        observedAt: this.latestDiscoveryAt,
+        detail: "XInput slot absent from the latest discovery",
+      };
+    }
+
+    if (snapshot.resultCode !== 0 && snapshot.resultCode !== 1_167) {
+      return this.unavailable(
+        snapshot.observedAt,
+        `XInput battery query failed with error ${snapshot.resultCode}`
+      );
+    }
+
+    if (snapshot.resultCode === 1_167 || !snapshot.connected) {
+      return {
+        state: "disconnected",
+        level: { kind: "unavailable" },
+        charging: null,
+        provider: this.id,
+        providerLabel: this.label,
+        observedAt: snapshot.observedAt,
+        detail: "XInput reports this exact slot as disconnected",
+      };
+    }
+
+    if (snapshot.batteryType === 1) {
+      return this.unavailable(
+        snapshot.observedAt,
+        "XInput wired controller; no battery status is available"
+      );
+    }
+    if (snapshot.batteryType === 0) {
+      return this.unavailable(
+        snapshot.observedAt,
+        "XInput did not report a battery type"
+      );
+    }
+    if (snapshot.batteryType === 255) {
+      return this.unavailable(
+        snapshot.observedAt,
+        "XInput reported an unknown battery type"
+      );
+    }
+    if (!isWireless(snapshot)) {
+      return this.unavailable(
+        snapshot.observedAt,
+        `XInput returned unsupported battery type ${snapshot.batteryType}`
+      );
+    }
+
+    const level = LEVELS[snapshot.batteryLevel];
+    if (level === undefined) {
+      return this.unavailable(
+        snapshot.observedAt,
+        "XInput returned an invalid battery level"
+      );
+    }
 
     return {
-      deviceId: 90000 + controller.index, // unique ID range for Xbox controllers
-      deviceName: `Xbox Controller ${controller.index + 1}`,
+      state: "connected",
+      level: { kind: "qualitative", value: level },
+      charging: null,
+      provider: this.id,
+      providerLabel: this.label,
+      observedAt: snapshot.observedAt,
+      detail: `XInput reports ${capitalize(level)}; slot assignment can change after reconnect`,
+    };
+  }
+
+  invalidateDiscovery(): void {
+    this.discoveryGeneration += 1;
+    this.discoveryAbort?.abort(new Error("XInput discovery was invalidated"));
+    this.discoveryAbort = undefined;
+    this.snapshots.clear();
+    this.discoveryCompleted = false;
+    this.latestDiscoveryAt = 0;
+  }
+
+  /** Transitional compatibility for the pre-provider action implementation. */
+  async initialize(): Promise<boolean> {
+    return (await this.discover()).length > 0;
+  }
+
+  /** Returns the current cached wireless choices without rescanning after init. */
+  async getDevices(): Promise<XboxControllerStatus[]> {
+    if (!this.discoveryCompleted) await this.discover();
+    return [...this.snapshots.values()]
+      .filter((snapshot) => snapshot.connected && isWireless(snapshot))
+      .map(({ index, connected, resultCode, batteryType, batteryLevel }) => ({
+        index,
+        connected,
+        resultCode,
+        batteryType,
+        batteryLevel,
+      }));
+  }
+
+  /**
+   * The legacy percentage-only model cannot represent XInput buckets, so it
+   * deliberately returns unavailable rather than fabricating a percentage.
+   */
+  async getBatteryInfo(controller: XboxControllerStatus): Promise<BatteryInfo> {
+    return {
+      deviceId: 90_000 + controller.index,
+      deviceName: `Xbox Controller (XInput slot ${controller.index + 1})`,
       deviceType: "Controller",
-      batteryLevel: isWired ? 100 : isWireless ? LEVEL_PCT[controller.batteryLevel] ?? 0 : -1,
-      isCharging: isWired,
+      batteryLevel: -1,
+      isCharging: false,
       isConnected: controller.connected,
     };
   }
+
+  private unavailable(observedAt: number, detail: string): BatteryStatus {
+    return {
+      state: "unavailable",
+      level: { kind: "unavailable" },
+      charging: null,
+      provider: this.id,
+      providerLabel: this.label,
+      observedAt,
+      detail,
+    };
+  }
+}
+
+/** Backward-compatible name while the action is migrated to DeviceProvider. */
+export { XInputProvider as XboxClient };
+
+function parseStatuses(output: string): XboxControllerStatus[] {
+  const trimmed = output.trim();
+  if (!trimmed) return [];
+  const parsed: unknown = JSON.parse(trimmed);
+  const candidates = Array.isArray(parsed) ? parsed : [parsed];
+  const statuses: XboxControllerStatus[] = [];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const value = candidate as Record<string, unknown>;
+    if (
+      typeof value.index !== "number" ||
+      !Number.isInteger(value.index) ||
+      value.index < 0 ||
+      value.index > 3 ||
+      typeof value.connected !== "boolean" ||
+      typeof value.resultCode !== "number" ||
+      !Number.isInteger(value.resultCode) ||
+      typeof value.batteryType !== "number" ||
+      !Number.isInteger(value.batteryType) ||
+      typeof value.batteryLevel !== "number" ||
+      !Number.isInteger(value.batteryLevel)
+    ) {
+      continue;
+    }
+    statuses.push({
+      index: value.index,
+      connected: value.resultCode === 0,
+      resultCode: value.resultCode,
+      batteryType: value.batteryType,
+      batteryLevel: value.batteryLevel,
+    });
+  }
+
+  return statuses;
+}
+
+function nativeIdForSlot(index: number): string {
+  return `slot:${index}`;
+}
+
+function isWireless(status: XboxControllerStatus): boolean {
+  return status.batteryType === 2 || status.batteryType === 3;
+}
+
+function toDescriptor(
+  nativeId: string,
+  snapshot: XInputSnapshot
+): DeviceDescriptor {
+  return {
+    key: makeDeviceKey("xinput", nativeId),
+    provider: "xinput",
+    providerLabel: "XInput",
+    nativeId,
+    name: `Xbox Controller (XInput slot ${snapshot.index + 1})`,
+    deviceType: "Controller",
+  };
+}
+
+function capitalize(value: string): string {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }

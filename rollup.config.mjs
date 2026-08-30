@@ -15,6 +15,7 @@ export default {
   external: [
     ...builtinModules,
     ...builtinModules.map((m) => `node:${m}`),
+    "node-hid",
   ],
   plugins: [
     resolve({

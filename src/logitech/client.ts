@@ -1,236 +1,217 @@
-import WebSocketModule from "ws";
-import type { BatteryInfo } from "../types";
+import {
+  makeDeviceKey,
+  unavailableStatus,
+  type BatteryStatus,
+  type DeviceDescriptor,
+  type DeviceProvider,
+  type DeviceRef,
+  type ProviderNotice,
+} from "../devices/types";
+import {
+  GHubClient,
+  type LogitechDiagnosticSink,
+} from "./ghub-client";
+import { DirectLogitechSource } from "./hidpp-source";
 
-const GHUB_WS_URL = "ws://localhost:9010";
+const PROVIDER_ID = "logitech" as const;
+const PROVIDER_LABEL = "Logitech";
 
-interface GHubDevice {
-  id: string;
-  extendedDisplayName: string;
-  deviceType: string;
-  capabilities?: {
-    hasBatteryStatus?: boolean;
-  };
+export interface LogitechProviderSource {
+  discover(signal?: AbortSignal): Promise<DeviceDescriptor[]>;
+  readStatus(ref: DeviceRef, signal?: AbortSignal): Promise<BatteryStatus>;
+  invalidateDiscovery?(reason?: string): void;
+  discoveryNotices?(): readonly ProviderNotice[];
+  supports?(ref: DeviceRef): boolean;
+  destroy?(): void;
 }
 
-interface GHubBatteryState {
-  percentage: number;
-  charging: boolean;
-  mileage?: number;
+export interface LogitechClientOptions {
+  directSource?: LogitechProviderSource;
+  ghubClient?: LogitechProviderSource;
+  diagnosticSink?: LogitechDiagnosticSink;
+  now?: () => number;
 }
 
-export class LogitechClient {
-  private ws: WebSocketModule | null = null;
-  private connected = false;
-  private cachedDevices: GHubDevice[] = [];
-  private batteryCache = new Map<string, GHubBatteryState>();
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
-  private lastMessageTime = 0;
-  private msgId = 0;
-  private pendingRequests = new Map<string, { resolve: (data: unknown) => void; timer: ReturnType<typeof setTimeout> }>();
-  private connectPromise: Promise<boolean> | null = null;
+interface SourceCoverage {
+  readonly direct: boolean;
+  readonly ghub: boolean;
+  readonly generation: number;
+}
 
-  async initialize(): Promise<boolean> {
-    if (this.connected) return true;
-    if (this.connectPromise) return this.connectPromise;
-    this.connectPromise = this.connect();
-    const result = await this.connectPromise;
-    this.connectPromise = null;
-    return result;
-  }
+export class LogitechClient implements DeviceProvider {
+  readonly id = PROVIDER_ID;
+  readonly label = PROVIDER_LABEL;
 
-  private connect(): Promise<boolean> {
-    return new Promise((resolve) => {
-      try {
-        this.ws = new WebSocketModule(GHUB_WS_URL, ["json"], {
-          headers: {
-            Origin: "file://",
-            Pragma: "no-cache",
-            "Cache-Control": "no-cache",
-          },
-        });
+  private readonly directSource: LogitechProviderSource;
+  private readonly ghubClient: LogitechProviderSource;
+  private readonly now: () => number;
+  private coverage = new Map<string, SourceCoverage>();
+  private notices: readonly ProviderNotice[] = [];
+  private discoveryGeneration = 0;
+  private destroyed = false;
 
-        const timeout = setTimeout(() => {
-          if (!this.connected) {
-            this.ws?.close();
-            resolve(false);
-          }
-        }, 3000);
-
-        this.ws.on("open", () => {
-          clearTimeout(timeout);
-          this.connected = true;
-          this.lastMessageTime = Date.now();
-          this.startHealthCheck();
-          resolve(true);
-        });
-
-        this.ws.on("message", (data: Buffer) => {
-          this.lastMessageTime = Date.now();
-          try {
-            const msg = JSON.parse(data.toString());
-            const id = msg.msgId;
-            if (id && this.pendingRequests.has(id)) {
-              const entry = this.pendingRequests.get(id)!;
-              clearTimeout(entry.timer);
-              this.pendingRequests.delete(id);
-              entry.resolve(msg);
-            }
-          } catch {
-            // ignore parse errors
-          }
-        });
-
-        this.ws.on("close", () => {
-          this.connected = false;
-          this.ws = null;
-          this.stopHealthCheck();
-          // Clear all pending request timers to prevent leaks
-          for (const entry of this.pendingRequests.values()) clearTimeout(entry.timer);
-          this.pendingRequests.clear();
-          // Reconnect after 5 seconds (handles sleep/wake, G Hub restart)
-          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-          this.reconnectTimer = setTimeout(() => { this.connectPromise = null; this.connect(); }, 5000);
-        });
-
-        this.ws.on("error", () => {
-          // close event will follow
-        });
-      } catch {
-        resolve(false);
-      }
-    });
-  }
-
-  /** Periodically ping G Hub to detect stale connections */
-  private startHealthCheck(): void {
-    this.stopHealthCheck();
-    this.healthCheckTimer = setInterval(() => {
-      // If no message received in 60 seconds, the connection is likely dead
-      if (this.connected && Date.now() - this.lastMessageTime > 60000) {
-        // Try a ping request — if it times out, force reconnect
-        this.sendRequest("GET", "/devices/list").catch(() => {
-          if (this.ws) {
-            this.ws.close();
-          }
-        });
-      }
-    }, 30000); // Check every 30 seconds
-  }
-
-  private stopHealthCheck(): void {
-    if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
-      this.healthCheckTimer = null;
-    }
-  }
-
-  private sendRequest(verb: string, path: string, payload?: unknown): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      if (!this.ws || !this.connected) {
-        reject(new Error("Not connected"));
-        return;
-      }
-
-      const id = `rr-${++this.msgId}`;
-      const msg: Record<string, unknown> = { msgId: id, verb, path };
-      if (payload) msg.payload = payload;
-
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error("Timeout"));
-      }, 3000);
-
-      this.pendingRequests.set(id, {
-        resolve: (data) => { resolve(data); },
-        timer,
+  constructor(options: LogitechClientOptions = {}) {
+    this.directSource = options.directSource ?? new DirectLogitechSource();
+    this.ghubClient =
+      options.ghubClient ??
+      new GHubClient({
+        diagnosticSink: options.diagnosticSink,
+        reconnect: false,
       });
-
-      this.ws.send(JSON.stringify(msg));
-    });
+    this.now = options.now ?? Date.now;
   }
 
-  async getDevices(): Promise<GHubDevice[]> {
-    // Ensure we're connected before querying
-    if (!this.connected) {
-      await this.initialize();
+  async discover(signal?: AbortSignal): Promise<DeviceDescriptor[]> {
+    if (this.destroyed) throw new Error("Logitech provider stopped");
+    const generation = ++this.discoveryGeneration;
+    const [directResult, ghubResult] = await Promise.allSettled([
+      this.directSource.discover(signal),
+      this.ghubClient.discover(signal),
+    ]);
+    if (generation !== this.discoveryGeneration) {
+      throw new Error("Logitech discovery was invalidated");
     }
-    try {
-      const resp = (await this.sendRequest("GET", "/devices/list")) as {
-        payload?: { deviceInfos?: GHubDevice[] };
-      };
-      const devices = resp?.payload?.deviceInfos || [];
-      this.cachedDevices = devices.filter(
-        (d) => d.capabilities?.hasBatteryStatus
-      );
-      return this.cachedDevices;
-    } catch {
-      // Request failed — connection might be dead, force reconnect
-      if (this.ws) this.ws.close();
-      return this.cachedDevices;
+    if (directResult.status === "rejected" && ghubResult.status === "rejected") {
+      this.coverage.clear();
+      this.notices = [];
+      throw new Error("Logitech discovery unavailable");
     }
+
+    const directDevices =
+      directResult.status === "fulfilled" ? directResult.value : [];
+    const ghubDevices =
+      ghubResult.status === "fulfilled" ? ghubResult.value : [];
+    const nextCoverage = new Map<string, SourceCoverage>();
+    for (const device of directDevices) {
+      nextCoverage.set(device.nativeId, {
+        direct: true,
+        ghub: false,
+        generation,
+      });
+    }
+    for (const device of ghubDevices) {
+      const existing = nextCoverage.get(device.nativeId);
+      nextCoverage.set(device.nativeId, {
+        direct: existing?.direct ?? false,
+        ghub: true,
+        generation,
+      });
+    }
+    this.coverage = nextCoverage;
+    this.notices = Object.freeze([
+      ...(directResult.status === "fulfilled"
+        ? this.directSource.discoveryNotices?.() ?? []
+        : []),
+      ...(ghubResult.status === "fulfilled"
+        ? this.ghubClient.discoveryNotices?.() ?? []
+        : []),
+    ]);
+
+    const merged = new Map<string, DeviceDescriptor>();
+    for (const device of directDevices) {
+      merged.set(device.nativeId, trustedDescriptor(device));
+    }
+    for (const device of ghubDevices) {
+      if (!merged.has(device.nativeId)) {
+        merged.set(device.nativeId, trustedDescriptor(device));
+      }
+    }
+    return [...merged.values()];
   }
 
-  async getBatteryInfo(device: GHubDevice): Promise<BatteryInfo> {
-    const base: BatteryInfo = {
-      deviceId: hashString(device.id),
-      deviceName: device.extendedDisplayName || device.id,
-      deviceType: mapDeviceType(device.deviceType),
-      batteryLevel: -1,
-      isCharging: false,
-      isConnected: true,
-    };
+  discoveryNotices(): readonly ProviderNotice[] {
+    return Object.freeze(this.notices.map((notice) => Object.freeze({ ...notice })));
+  }
 
-    try {
-      const resp = (await this.sendRequest(
-        "GET",
-        `/battery/${device.id}/state`
-      )) as {
-        payload?: GHubBatteryState;
-      };
-
-      if (resp?.payload) {
-        const bat = resp.payload;
-        this.batteryCache.set(device.id, bat);
-        base.batteryLevel = bat.percentage;
-        base.isCharging = bat.charging;
+  async readStatus(
+    ref: DeviceRef,
+    signal?: AbortSignal
+  ): Promise<BatteryStatus> {
+    if (
+      ref.provider !== PROVIDER_ID ||
+      ref.key !== makeDeviceKey(PROVIDER_ID, ref.nativeId)
+    ) {
+      return unavailableStatus(ref, this.now(), "Invalid Logitech identity");
+    }
+    const coverage = this.coverage.get(ref.nativeId);
+    const directSupported =
+      coverage?.direct === true || this.directSource.supports?.(ref) === true;
+    if (directSupported) {
+      const directStatus = await this.directSource.readStatus(ref, signal);
+      if (directStatus.state !== "unavailable") {
+        return trustedStatus(directStatus, directStatus.detail);
       }
-    } catch {
-      // Use cached data if available
-      const cached = this.batteryCache.get(device.id);
-      if (cached) {
-        base.batteryLevel = cached.percentage;
-        base.isCharging = cached.charging;
-      }
+      const fallback = await this.readGHubFallback(ref, signal);
+      return fallback ?? trustedStatus(directStatus, directStatus.detail);
     }
 
-    return base;
+    if (coverage?.ghub) {
+      const fallback = await this.ghubClient.readStatus(ref, signal);
+      return trustedStatus(fallback, "G Hub fallback");
+    }
+    return unavailableStatus(
+      { ...ref, providerLabel: PROVIDER_LABEL },
+      this.now(),
+      "Logitech device not found; refresh discovery"
+    );
+  }
+
+  invalidateDiscovery(reason?: string): void {
+    this.discoveryGeneration += 1;
+    this.coverage.clear();
+    this.notices = [];
+    this.directSource.invalidateDiscovery?.(reason);
+    this.ghubClient.invalidateDiscovery?.(reason);
   }
 
   destroy(): void {
-    this.stopHealthCheck();
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.discoveryGeneration += 1;
+    this.coverage.clear();
+    this.notices = [];
+    this.directSource.destroy?.();
+    this.ghubClient.destroy?.();
+  }
+
+  private async readGHubFallback(
+    ref: DeviceRef,
+    signal?: AbortSignal
+  ): Promise<BatteryStatus | null> {
+    let coverage = this.coverage.get(ref.nativeId);
+    if (!coverage?.ghub) {
+      try {
+        const devices = await this.ghubClient.discover(signal);
+        if (!devices.some((device) => device.nativeId === ref.nativeId)) {
+          return null;
+        }
+        coverage = {
+          direct: coverage?.direct ?? false,
+          ghub: true,
+          generation: this.discoveryGeneration,
+        };
+        this.coverage.set(ref.nativeId, coverage);
+      } catch {
+        return null;
+      }
     }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-    }
+    const fallback = await this.ghubClient.readStatus(ref, signal);
+    return trustedStatus(fallback, "G Hub fallback");
   }
 }
 
-function mapDeviceType(type: string): string {
-  const t = (type || "").toLowerCase();
-  if (t.includes("mouse")) return "Mouse";
-  if (t.includes("keyboard")) return "Keyboard";
-  if (t.includes("headset")) return "Headset";
-  return type || "Device";
+function trustedDescriptor(device: DeviceDescriptor): DeviceDescriptor {
+  return { ...device, providerLabel: PROVIDER_LABEL };
 }
 
-function hashString(s: string): number {
-  let hash = 0;
-  for (let i = 0; i < s.length; i++) {
-    hash = (hash * 31 + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
+function trustedStatus(
+  status: BatteryStatus,
+  detail: string | undefined
+): BatteryStatus {
+  return {
+    ...status,
+    provider: PROVIDER_ID,
+    providerLabel: PROVIDER_LABEL,
+    ...(detail === undefined ? {} : { detail }),
+  };
 }

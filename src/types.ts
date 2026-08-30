@@ -7,8 +7,12 @@ export interface BatteryInfo {
   batteryLevel: number;
   /** Whether the device is currently charging */
   isCharging: boolean;
+  /** Whether this percentage is the last known reading rather than a fresh value. */
+  isLastKnown?: boolean;
   /** Whether the device is connected */
   isConnected: boolean;
+  /** Human-readable source of this status, shown when status text is enabled. */
+  providerLabel?: string;
   /** For headsets: base station battery level */
   chargerLevel?: number;
 }
