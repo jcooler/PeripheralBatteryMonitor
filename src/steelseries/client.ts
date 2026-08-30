@@ -710,7 +710,7 @@ export class SteelSeriesClient implements DeviceProvider {
     const nativeId = String(device.id);
     if (isHeadsetType(device)) {
       const headsetStatus = this.headsetConnectionData.get(nativeId);
-      if (headsetStatus) {
+      if (headsetStatus !== undefined) {
         return headsetConnectionEvidence(headsetStatus);
       }
     }

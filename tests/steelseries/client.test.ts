@@ -718,7 +718,10 @@ describe("passive SteelSeries GG client", () => {
     });
   });
 
-  it("retains history but stays unavailable for an unknown headset state until later exact evidence", async () => {
+  it.each([
+    { label: "new enum", connectionStatus: "SOMETHING_NEW" },
+    { label: "empty enum", connectionStatus: "" },
+  ])("retains history but stays unavailable for an unknown headset $label until later exact evidence", async ({ connectionStatus }) => {
     const clock = { value: 4_000_000_000 };
     const batteryCache = fakeBatteryCache([{
       nativeId: "43",
@@ -743,7 +746,7 @@ describe("passive SteelSeries GG client", () => {
       event: "device_event",
       data: {
         id: 43,
-        connectionEvent: { connectionStatus: "SOMETHING_NEW" },
+        connectionEvent: { connectionStatus },
         batteryEvent: { batteryPercent: 90 },
       },
     })));
