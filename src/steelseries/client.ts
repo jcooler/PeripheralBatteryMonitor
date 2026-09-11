@@ -82,7 +82,10 @@ export interface SteelSeriesClientOptions {
   liveDataMaxAgeMs?: number;
   handshakeTimeoutMs?: number;
   batteryCache?: SteelSeriesBatteryCacheStore;
-  diagnosticSink?: { warn(message: string): void };
+  diagnosticSink?: {
+    info?(message: string): void;
+    warn(message: string): void;
+  };
 }
 
 interface LiveBattery {
@@ -192,7 +195,9 @@ export class SteelSeriesClient implements DeviceProvider {
   private readonly liveDataMaxAgeMs: number;
   private readonly handshakeTimeoutMs: number;
   private readonly batteryCache: SteelSeriesBatteryCacheStore | undefined;
-  private readonly diagnosticSink: { warn(message: string): void } | undefined;
+  private readonly diagnosticSink:
+    | { info?(message: string): void; warn(message: string): void }
+    | undefined;
 
   private encryptedAddress: string | null = null;
   private initialized = false;
@@ -419,12 +424,20 @@ export class SteelSeriesClient implements DeviceProvider {
     const connectionEventSequence = this.connectionEventSequence;
     const inventoryRequestSequence = ++this.inventoryRequestSequence;
     const address = this.encryptedAddress;
-    const payload = (await this.httpGet({
-      address,
-      method: "GET",
-      path: "/devices",
-      signal,
-    })) as Partial<DevicesResponse> | null;
+    this.diagnosticSink?.info?.("SteelSeries inventory request started");
+    let payload: Partial<DevicesResponse> | null;
+    try {
+      payload = (await this.httpGet({
+        address,
+        method: "GET",
+        path: "/devices",
+        signal,
+      })) as Partial<DevicesResponse> | null;
+      this.diagnosticSink?.info?.("SteelSeries inventory request succeeded");
+    } catch (error) {
+      this.diagnosticSink?.info?.("SteelSeries inventory request failed");
+      throw error;
+    }
     if (
       !this.isCurrentLifecycle(lifecycleGeneration) ||
       discoveryGeneration !== this.discoveryGeneration ||

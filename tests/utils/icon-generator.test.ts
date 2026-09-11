@@ -108,7 +108,8 @@ describe("battery status icons", () => {
       providerLabel: "SteelSeries GG",
     }, { showStatusText: true }));
 
-    expect(lastKnownSvg).toContain("~85%");
+    expect(lastKnownSvg).toContain("85%");
+    expect(lastKnownSvg).not.toContain("~85%");
     expect(lastKnownSvg).toContain("Last known");
     expect(lastKnownSvg).not.toContain("SteelSeries GG");
     expect(lastKnownSvg).not.toContain("<polygon");

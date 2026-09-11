@@ -133,7 +133,10 @@ interface SetupOptions {
   inventory?: readonly SteelSeriesDevice[];
   cacheEntries?: readonly SteelSeriesBatteryCacheEntry[];
   batteryCache?: SteelSeriesBatteryCacheStore;
-  diagnosticSink?: { warn(message: string): void };
+  diagnosticSink?: {
+    info?(message: string): void;
+    warn(message: string): void;
+  };
 }
 
 function setup(options: SetupOptions = {}) {
@@ -1414,6 +1417,27 @@ describe("passive SteelSeries GG client", () => {
     })));
     await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
     expect(warn.mock.calls.flat()).not.toContain("secret device metadata");
+  });
+
+  it("logs only generic inventory request timing and outcomes", async () => {
+    const info = vi.fn();
+    const { client, httpGet } = setup({
+      diagnosticSink: { info, warn: vi.fn() },
+      inventory: [batteryKeyboard],
+    });
+
+    await expect(client.discover()).resolves.toHaveLength(1);
+    httpGet.mockRejectedValueOnce(new Error("secret Arena payload"));
+    await expect(client.discover()).rejects.toThrow("secret Arena payload");
+
+    expect(info.mock.calls.flat()).toEqual([
+      "SteelSeries inventory request started",
+      "SteelSeries inventory request succeeded",
+      "SteelSeries inventory request started",
+      "SteelSeries inventory request failed",
+    ]);
+    expect(info.mock.calls.flat().join(" ")).not.toContain("Arena");
+    expect(info.mock.calls.flat().join(" ")).not.toContain("payload");
   });
 });
 

@@ -4,7 +4,9 @@
 
 **Goal:** Persist validated passive SteelSeries battery readings and display them honestly as fresh or visibly last-known for exactly connected keyboards and headsets.
 
-**Architecture:** Add a bounded Stream Deck global-settings cache behind a narrow injected interface, then reconcile its entries with current GG inventory inside `SteelSeriesClient`. Propagate only the explicit last-known marker and timestamp through the action boundary so the key and Property Inspector can render `~85%` and a trusted age label without restoring any GG mutation.
+**Architecture:** Add a bounded Stream Deck global-settings cache behind a narrow injected interface, then reconcile its entries with current GG inventory inside `SteelSeriesClient`. Propagate only the explicit last-known marker and timestamp through the action boundary so the key and Property Inspector can render a plain percentage plus trusted freshness labels without restoring any GG mutation.
+
+**2026-09-11 owner amendment:** Plain percentages replace the original tilde notation. `Last known` and `Last seen` retain freshness disclosure, and a fresh charging bolt must render beside rather than beneath the percentage. Generic logger timestamps now record only SteelSeries inventory request start and outcome for future Arena prompt correlation.
 
 **Tech Stack:** TypeScript, Vitest 4, Rollup 4, Elgato Stream Deck SDK 2, vanilla Property Inspector JavaScript and CSS, Playwright Chromium
 
@@ -21,7 +23,7 @@
 - Device absence and transient GG or socket loss retain cache history but may not display a percentage without new connection evidence.
 - Persist no more than 32 entries and never persist or log addresses, HID paths, USB identifiers, serials, URLs, packets, or raw GG payloads.
 - Preserve all unrelated Stream Deck global settings during serialized cache mutations.
-- Last-known never claims charging and must show a tilde even when status text is disabled.
+- Last-known never claims charging and always shows a plain percentage without a tilde.
 - No Marketplace upload, submission, publication, or PR merge is authorized by this plan.
 
 ---
@@ -288,10 +290,10 @@ git commit -m "fix: retain honest SteelSeries battery history"
 
 - [ ] **Step 1: Write failing icon tests for visibly last-known status**
 
-Add a percentage icon case with `batteryLevel: 85`, `isCharging: true`, `isLastKnown: true`, and status text enabled. Assert the decoded SVG contains `~85%` and `Last known`, omits `SteelSeries GG`, and contains no charging bolt polygon. Assert a fresh icon still contains `85%`, its provider label, and a bolt when charging.
+Add a percentage icon case with `batteryLevel: 85`, `isCharging: true`, `isLastKnown: true`, and status text enabled. Assert the decoded SVG contains plain `85%` and `Last known`, omits `SteelSeries GG`, and contains no charging bolt polygon. Assert a fresh icon still contains `85%`, its provider label, and a bolt when charging.
 
 ```ts
-expect(lastKnownSvg).toContain("~85%");
+expect(lastKnownSvg).toContain("85%");
 expect(lastKnownSvg).toContain("Last known");
 expect(lastKnownSvg).not.toContain("SteelSeries GG");
 expect(lastKnownSvg).not.toContain("<polygon");
@@ -301,11 +303,11 @@ expect(lastKnownSvg).not.toContain("<polygon");
 
 Run: `npm test -- tests/utils/icon-generator.test.ts`
 
-Expected: FAIL because `isLastKnown` and tilde rendering are not implemented.
+Expected: FAIL because `isLastKnown` presentation is not implemented.
 
 - [ ] **Step 3: Implement the explicit icon flag**
 
-Add `isLastKnown?: boolean` to `BatteryInfo`. In `generateBatteryIcon`, suppress the bolt when true, prefix the percentage with `~`, and make status parts exactly `["Last known"]`. Do not infer freshness from `providerLabel`, `detail`, age, or device type. Preserve the existing color, device labels, background, and cycle indicator.
+Add `isLastKnown?: boolean` to `BatteryInfo`. In `generateBatteryIcon`, suppress the bolt when true, keep the percentage plain, and make status parts exactly `["Last known"]`. Do not infer freshness from `providerLabel`, `detail`, age, or device type. Preserve the existing color, device labels, background, and cycle indicator.
 
 - [ ] **Step 4: Run icon tests and verify GREEN**
 
@@ -326,7 +328,7 @@ expect(generateBatteryIcon).toHaveBeenCalledWith(
 expect(inspectorMessage.statuses).toContainEqual({
   deviceKey: "steelseries:330",
   state: "connected",
-  batteryText: "~85%",
+  batteryText: "85%",
   freshness: "last-known",
   observedAt,
 });
@@ -368,17 +370,17 @@ git commit -m "feat: mark last-known battery readings"
 - Modify: `tests/ui/property-inspector.browser.test.ts`
 
 **Interfaces:**
-- Consumes: runtime `freshness: "last-known"`, `observedAt`, and `batteryText: "~N%"` from Task 3.
+- Consumes: runtime `freshness: "last-known"`, `observedAt`, and plain percentage `batteryText` from Task 3.
 - Produces: exported `formatLastSeenAge(observedAt, now)` for deterministic unit coverage.
 
 - [ ] **Step 1: Write failing runtime validation and age-format tests**
 
-Use `buildDeviceRows` and `formatLastSeenAge` to cover `Last seen 15m ago`, `Last seen 59m ago`, `Last seen 1h ago`, `Last seen 23h ago`, `Last seen 1d ago`, and `Last seen 30d ago`. Accept last-known only when state is connected, battery text matches `^~(?:100|[1-9]?\d)%$`, and `observedAt` is finite, non-negative, not future, and at most 30 days old. Reject the entire malformed runtime status when any of those fields disagree.
+Use `buildDeviceRows` and `formatLastSeenAge` to cover `Last seen 15m ago`, `Last seen 59m ago`, `Last seen 1h ago`, `Last seen 23h ago`, `Last seen 1d ago`, and `Last seen 30d ago`. Accept last-known only when state is connected, battery text is a plain percentage, and `observedAt` is finite, non-negative, not future, and at most 30 days old. Reject the entire malformed runtime status when any of those fields disagree.
 
 ```ts
 expect(formatLastSeenAge(now - 23 * 60 * 1_000, now)).toBe("Last seen 23m ago");
 expect(row.runtimeStatus).toMatchObject({
-  batteryText: "~85%",
+  batteryText: "85%",
   freshness: "last-known",
   observedAt,
 });
@@ -411,7 +413,7 @@ Expected: formatting, rejection, and rendering tests PASS.
 
 - [ ] **Step 5: Write a failing real Chromium width matrix**
 
-Render a selected Apex row with `~85%` and `Last seen 23m ago`, plus a selected Arctis row with `~72%` and `Last seen 3d ago`. At 250, 280, 360, and 1280 CSS pixels assert:
+Render a selected Apex row with `85%` and `Last seen 23m ago`, plus a selected Arctis row with `72%` and `Last seen 3d ago`. At 250, 280, 360, and 1280 CSS pixels assert:
 
 - no horizontal document overflow;
 - position, identity, Remove, and drag grip remain separated and inside the viewport;
@@ -497,7 +499,7 @@ Expected: full Vitest suite PASS, TypeScript PASS, build PASS, Stream Deck valid
 Create `docs/qa/2026-08-28-steelseries-last-known-soak.md` with separate Apex Pro TKL Wireless and Arctis Nova Pro Wireless rows for:
 
 - fresh percentage time and value after opening each GG page once;
-- transition time to `~percentage` with GG page closed;
+- transition time to a plain-percentage `Last known` state with GG page closed;
 - plugin restart recovery and connection confirmation;
 - device off, confirmed disconnect, cache clearing, and device-on unavailable state until a new event;
 - GG restart, sleep/wake, USB/wireless transition, and device switching;

@@ -708,8 +708,8 @@ function freshnessFixture(): Record<string, any> {
       event: "deviceRuntimeStatus",
       currentDeviceKey: apex.key,
       statuses: [
-        { deviceKey: apex.key, state: "connected", batteryText: "~85%" },
-        { deviceKey: arctis.key, state: "connected", batteryText: "~72%" },
+        { deviceKey: apex.key, state: "connected", batteryText: "85%" },
+        { deviceKey: arctis.key, state: "connected", batteryText: "72%" },
       ],
     },
     lastKnownAges: {

@@ -783,7 +783,7 @@ function normalizeRuntimePayload(payload) {
       const lastKnown =
         value.freshness === "last-known" &&
         value.state === "connected" &&
-        /^~(?:100|[1-9]?\d)%$/.test(value.batteryText) &&
+        /^(?:100|[1-9]?\d)%$/.test(value.batteryText) &&
         typeof value.observedAt === "number" &&
         Number.isFinite(value.observedAt) &&
         value.observedAt >= 0 &&

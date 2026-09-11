@@ -745,14 +745,14 @@ describe("Property Inspector device-list model", () => {
           {
             deviceKey: windowsKeyboard.key,
             state: "connected",
-            batteryText: "~85%",
+            batteryText: "85%",
             freshness: "last-known",
             observedAt,
           },
           {
             deviceKey: steelSeriesMouse.key,
             state: "disconnected",
-            batteryText: "~72%",
+            batteryText: "72%",
             freshness: "last-known",
             observedAt,
           },
@@ -761,7 +761,6 @@ describe("Property Inspector device-list model", () => {
             state: "connected",
             batteryText: "85%",
             freshness: "last-known",
-            observedAt,
           },
         ],
       }
@@ -772,7 +771,7 @@ describe("Property Inspector device-list model", () => {
     renderDeviceList(list, rows, { onIncluded() {}, onReorder() {} });
 
     expect(rows[0].runtimeStatus).toMatchObject({
-      batteryText: "~85%",
+      batteryText: "85%",
       freshness: "last-known",
       observedAt,
     });
@@ -789,11 +788,11 @@ describe("Property Inspector device-list model", () => {
       [windowsKeyboard, steelSeriesMouse, xinputController, logitechMouse, logitechKeyboard],
       {
         statuses: [
-          { deviceKey: windowsKeyboard.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: Number.NaN },
-          { deviceKey: steelSeriesMouse.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: -1 },
-          { deviceKey: xinputController.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: now + 24 * 60 * 60 * 1_000 },
-          { deviceKey: logitechMouse.key, state: "connected", batteryText: "~85%", freshness: "last-known", observedAt: now - 31 * 24 * 60 * 60 * 1_000 },
-          { deviceKey: logitechKeyboard.key, state: "connected", batteryText: "~0%", freshness: "fresh", observedAt: now },
+          { deviceKey: windowsKeyboard.key, state: "connected", batteryText: "85%", freshness: "last-known", observedAt: Number.NaN },
+          { deviceKey: steelSeriesMouse.key, state: "connected", batteryText: "85%", freshness: "last-known", observedAt: -1 },
+          { deviceKey: xinputController.key, state: "connected", batteryText: "85%", freshness: "last-known", observedAt: now + 24 * 60 * 60 * 1_000 },
+          { deviceKey: logitechMouse.key, state: "connected", batteryText: "85%", freshness: "last-known", observedAt: now - 31 * 24 * 60 * 60 * 1_000 },
+          { deviceKey: logitechKeyboard.key, state: "connected", batteryText: "0%", freshness: "fresh", observedAt: now },
         ],
       }
     );

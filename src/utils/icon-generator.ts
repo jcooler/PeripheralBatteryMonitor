@@ -83,11 +83,11 @@ export function generateBatteryIcon(
   const fillX = bx + pad;
   const fillY = by + pad;
 
-  // Charging bolt centered in battery
-  const boltCx = bx + bw / 2;
+  // Keep the charging bolt beside the percentage so both remain legible.
+  const boltCx = bx + bw / 2 + 34;
   const boltCy = by + bh / 2;
   const bolt = effectiveCharging
-    ? `<polygon points="${boltCx + 8},${boltCy - 12} ${boltCx - 4},${boltCy + 2} ${boltCx + 4},${boltCy + 2} ${boltCx - 2},${boltCy + 16} ${boltCx + 14},${boltCy - 2} ${boltCx + 5},${boltCy - 2}" fill="#FFD700" stroke="#B8860B" stroke-width="1"/>`
+    ? `<polygon points="${boltCx + 4},${boltCy - 10} ${boltCx - 4},${boltCy} ${boltCx + 1},${boltCy} ${boltCx - 3},${boltCy + 10} ${boltCx + 6},${boltCy - 2} ${boltCx + 1},${boltCy - 2}" fill="#FFD700" stroke="#B8860B" stroke-width="1"/>`
     : "";
 
   // Optional labels
@@ -112,8 +112,9 @@ export function generateBatteryIcon(
   // Percentage text — centered in the battery rectangle
   const battCenterX = bx + bw / 2;
   const battCenterY = by + bh / 2 + 9;
+  const percentageX = effectiveCharging ? battCenterX - 12 : battCenterX;
   const pctText = o.showPercentage
-    ? `<text x="${battCenterX}" y="${battCenterY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="white">${info.isLastKnown ? "~" : ""}${level}%</text>`
+    ? `<text x="${percentageX}" y="${battCenterY}" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="bold" fill="white">${level}%</text>`
     : "";
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">

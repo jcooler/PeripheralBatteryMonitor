@@ -567,11 +567,12 @@ describe("BatteryAction Stream Deck adapter", () => {
         expect.anything(),
         expect.anything(),
       );
-      expect(decodeIcon(vi.mocked(handle.setImage).mock.calls.at(-1)?.[0] ?? "")).toContain("~85%");
+      expect(decodeIcon(vi.mocked(handle.setImage).mock.calls.at(-1)?.[0] ?? "")).toContain("85%");
+      expect(decodeIcon(vi.mocked(handle.setImage).mock.calls.at(-1)?.[0] ?? "")).not.toContain("~85%");
       expect(sent.at(-1).statuses).toContainEqual({
         deviceKey: "steelseries:42",
         state: "connected",
-        batteryText: "~85%",
+        batteryText: "85%",
         freshness: "last-known",
         observedAt,
       });

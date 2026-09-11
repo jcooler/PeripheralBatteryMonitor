@@ -77,9 +77,9 @@ An inventory response that omits the configured device is treated as unavailable
 
 Fresh readings retain the existing percentage display, for example `85%`.
 
-Last-known readings display `~85%`. The tilde is always present when the percentage is shown, including when the optional status-text setting is off. This ensures the key never presents an old value as exact current data.
+Last-known readings display the same plain percentage, for example `85%`, without a tilde. When status text is enabled, `Last known` provides the distinction; when it is disabled, the owner has explicitly chosen the simpler percentage-only key display. The Property Inspector always retains the trusted age distinction.
 
-When status text is enabled, the secondary status line uses `Last known` instead of a charging or provider claim. The fill color still represents the recorded percentage, but the charging bolt is suppressed. Existing device name, device type, cycle position, and background settings remain unchanged.
+When status text is enabled, the secondary status line uses `Last known` instead of a charging or provider claim. The fill color still represents the recorded percentage, but the charging bolt is suppressed. For a fresh charging value, a compact bolt sits beside the percentage rather than underneath it. Existing device name, device type, cycle position, and background settings remain unchanged.
 
 The icon generator receives an explicit optional last-known presentation flag rather than inferring freshness from provider names or detail strings.
 
@@ -93,7 +93,7 @@ The runtime status message adds only validated fields:
 The Property Inspector accepts those fields only with a connected status and a percentage-shaped battery label. Invalid combinations are discarded. It renders:
 
 - connection: `Connected`;
-- battery: `~85%`;
+- battery: `85%`;
 - age: a compact label such as `Last seen 23m ago`, `Last seen 4h ago`, or `Last seen 3d ago`.
 
 Age text is calculated from the validated timestamp and never contains device-supplied markup. It rounds down to whole minutes below 1 hour, whole hours below 1 day, and whole days thereafter. Existing `textContent` rendering remains in place. The age label updates whenever the normal runtime summary refreshes; no new timer or background request is added to the Property Inspector.
@@ -125,7 +125,7 @@ Unavailable, disconnected, and fresh statuses do not carry last-known age fields
 ### SteelSeries client
 
 - A fresh event returns the exact percentage and charging state.
-- The same connected keyboard and headset become `~percentage` last-known after 15 minutes instead of unavailable.
+- The same connected keyboard and headset retain a plain percentage marked by last-known metadata after 15 minutes instead of becoming unavailable.
 - A persisted keyboard or headset survives a new client instance and is shown only after exact connected inventory validation.
 - Confirmed disconnect, inventory `connected: 0`, metadata mismatch, recycled ID, duplicate ID, and 30-day expiry remove the cached reading.
 - Device absence, socket loss, and GG restart retain cache data but do not display it without current connection evidence.
@@ -135,7 +135,7 @@ Unavailable, disconnected, and fresh statuses do not carry last-known age fields
 
 ### Action and UI
 
-- The key SVG contains `85%` for fresh and `~85%` for last-known, with no charging bolt in the latter.
+- The key SVG contains a plain percentage for both fresh and last-known values, with no charging bolt in the latter and no percentage/bolt overlap while freshly charging.
 - The runtime summary includes freshness and timestamp only for a valid last-known connected percentage.
 - The Property Inspector renders the last-known battery and age through `textContent`, rejects malformed fields, and preserves all controls at supported widths.
 - Real Chromium checks cover the device row at 250, 280, 360, and 1280 CSS pixels with minute, hour, and day age labels.
@@ -155,6 +155,6 @@ Tests and a short live run cannot prove multi-day sleep, wake, GG restart, or ha
 
 ## Marketplace boundary
 
-Storefront copy may say that SteelSeries GG is required for identity, connection state, and passive battery events. It must not claim direct SteelSeries HID battery support or permanently current readings. The UI's tilde and age label are part of that honesty contract and must not be removed while passive GG events can stop.
+Storefront copy may say that SteelSeries GG is required for identity, connection state, and passive battery events. It must not claim direct SteelSeries HID battery support or permanently current readings. The `Last known` and `Last seen` labels are the visible honesty contract while passive GG events can stop; the percentage itself remains unprefixed by explicit owner preference.
 
 No Marketplace upload, submission, or publication is included in this change.

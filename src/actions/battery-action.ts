@@ -440,7 +440,7 @@ function sanitizeRuntimeStatus(
     return withSource({
       deviceKey,
       state: "connected",
-      batteryText: `${isSafeLastKnown ? "~" : ""}${percentage}%`,
+      batteryText: `${percentage}%`,
       ...(isSafeLastKnown
         ? { freshness: "last-known", observedAt: status.observedAt }
         : {}),

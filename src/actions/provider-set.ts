@@ -32,6 +32,7 @@ export function createActiveProviders(): DeviceProvider[] {
     new SteelSeriesClient({
       batteryCache: steelSeriesBatteryCache,
       diagnosticSink: {
+        info: (message) => streamDeck.logger.info(message),
         warn: (message) => streamDeck.logger.warn(message),
       },
     }),
